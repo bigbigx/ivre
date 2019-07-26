@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2014 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,19 +19,24 @@
 
 """
 This module is part of IVRE.
-Copyright 2011 - 2014 Pierre LALET <pierre.lalet@cea.fr>
+Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
 
 This sub-module is responsible for handling scanning agents.
 """
 
-from ivre import utils
 
-import os
 import glob
-import subprocess
+import os
 import random
-import time
 import re
+import subprocess
+import time
+
+
+from builtins import range
+
+
+from ivre import utils
 
 
 class Agent(object):
@@ -97,7 +102,8 @@ class Agent(object):
 
     def create_local_dirs(self):
         """Create local directories used to manage the agent"""
-        for dirname in ['input', 'remoteinput', 'remotecur', 'remoteoutput']:
+        for dirname in ['input', 'remoteinput', 'remotecur', 'remoteoutput',
+                        'remotedata']:
             utils.makedirs(self.get_local_path(dirname))
 
     def may_receive(self):
@@ -144,6 +150,9 @@ class Agent(object):
         subprocess.call(self.rsync + ['-a', '--remove-source-files',
                                       self.get_remote_path('output'),
                                       self.get_local_path('remoteoutput')])
+        subprocess.call(self.rsync + ['-a', '--remove-source-files',
+                                      self.get_remote_path('data'),
+                                      self.get_local_path('remotedata')])
         for campaign in self.campaigns:
             campaign.sync(self)
 
@@ -168,7 +177,7 @@ class Campaign(object):
         self.outputpath = outputpath
         if visiblecategory is None:
             self.visiblecategory = ''.join(chr(random.randrange(65, 91))
-                                           for _ in xrange(10))
+                                           for _ in range(10))
         else:
             self.visiblecategory = visiblecategory
         self.maxfeed = maxfeed
@@ -181,17 +190,18 @@ class Campaign(object):
         the target status.
 
         """
-        remout = agent.get_local_path('remoteoutput')
         for remfname in glob.glob(
-                os.path.join(remout, self.visiblecategory + '.*.xml')):
+                os.path.join(agent.get_local_path('remoteoutput'),
+                             self.visiblecategory + '.*.xml*')
+        ):
             locfname = os.path.basename(remfname).split('.', 4)
             locfname[0] = self.category
             status = 'unknown'
-            with open(remfname) as remfdesc:
+            with utils.open_file(remfname) as remfdesc:
                 remfcontent = remfdesc.read()
-                if '<status state="up"' in remfcontent:
+                if b'<status state="up"' in remfcontent:
                     status = 'up'
-                elif '<status state="down"' in remfcontent:
+                elif b'<status state="down"' in remfcontent:
                     if not self.storedown:
                         remfdesc.close()
                         os.unlink(remfname)
@@ -203,7 +213,23 @@ class Campaign(object):
                 locfname[0],
                 status,
                 re.sub('[/@:]', '_', agent.name),
-                *locfname[1:])
+                *locfname[1:]
+            )
+            utils.makedirs(os.path.dirname(locfname))
+            os.rename(remfname, locfname)
+        for remfname in glob.glob(
+                os.path.join(agent.get_local_path('remotedata'),
+                             self.visiblecategory + '.*.tar*')
+        ):
+            locfname = os.path.basename(remfname).split('.', 4)
+            locfname[0] = self.category
+            locfname = os.path.join(
+                self.outputpath,
+                locfname[0],
+                'data',
+                re.sub('[/@:]', '_', agent.name),
+                *locfname[1:]
+            )
             utils.makedirs(os.path.dirname(locfname))
             os.rename(remfname, locfname)
 
@@ -212,8 +238,8 @@ class Campaign(object):
         can receive.
 
         """
-        for _ in xrange(max(agent.may_receive(), maxnbr)):
-            addr = utils.int2ip(self.targiter.next())
+        for _ in range(max(agent.may_receive(), maxnbr or 0)):
+            addr = utils.int2ip(next(self.targiter))
             with open(os.path.join(agent.get_local_path('input'),
                                    '%s.%s' % (self.visiblecategory, addr)),
                       'w') as fdesc:

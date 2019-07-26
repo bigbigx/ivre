@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -16,14 +16,20 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-import ivre.target
-import ivre.utils
-import ivre.scanengine
 
 import os
 import shlex
 import subprocess
 import sys
+
+
+from builtins import input
+
+
+import ivre.target
+import ivre.utils
+import ivre.scanengine
+
 
 MAINDIR = "./agentsdata"
 
@@ -31,19 +37,20 @@ ACTION_SYNC = 1
 ACTION_FEED = 2
 ACTION_BOTH = 3
 
+
 def main():
     try:
         import argparse
         parser = argparse.ArgumentParser(
             description='Sends targets to a remote agent.',
-            parents=[ivre.target.argparser])
+            parents=[ivre.target.ARGPARSER])
         USING_ARGPARSE = True
     except ImportError:
         import optparse
         parser = optparse.OptionParser(
             description='Sends targets to a remote agent.',
             usage='Usage: ivre runscansagent [options] AGENT [AGENT ...]')
-        for args, kargs in ivre.target.argparser.args:
+        for args, kargs in ivre.target.ARGPARSER.args:
             parser.add_option(*args, **kargs)
         parser.parse_args_orig = parser.parse_args
 
@@ -111,14 +118,18 @@ def main():
         except KeyboardInterrupt:
             ivre.utils.LOGGER.info('Interrupted by user: stop feeding.')
             ivre.utils.LOGGER.info('Use "--state %s" to resume.',
-                                   ' '.join(map(str, camp.targiter.getstate())))
+                                   ' '.join(str(elt) for elt in
+                                            camp.targiter.getstate()))
         except Exception:
             ivre.utils.LOGGER.critical('Exception', exc_info=True)
             ivre.utils.LOGGER.info('Use "--state %s" to resume.',
-                                   ' '.join(map(str, camp.targiter.getstate())))
+                                   ' '.join(str(elt) for elt in
+                                            camp.targiter.getstate()))
         else:
             ivre.utils.LOGGER.info('No target left to scan.')
             if os.environ['TERM'] != 'screen':
                 ivre.utils.LOGGER.info('Press enter to exit.')
-                raw_input()
-        raw_input()
+                try:
+                    input()
+                except (EOFError, IOError):
+                    pass

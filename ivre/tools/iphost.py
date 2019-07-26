@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -16,85 +16,81 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
+
 'Query the passive database to perform DNS resolutions (passive DNS).'
 
-import re
-import time
-import struct
-import sys
-reload(sys)
-sys.setdefaultencoding('utf-8')
-import datetime
+
+from __future__ import print_function
 import getopt
+import sys
+try:
+    reload(sys)
+except NameError:
+    pass
+else:
+    sys.setdefaultencoding('utf-8')
 
-import ivre.utils
+
 from ivre.db import db
-
-ipaddr = re.compile('^\d+\.\d+\.\d+\.\d+$')
-
-
-def convert_ip(addr):
-    try:
-        return ivre.utils.int2ip(addr)
-    except (struct.error, TypeError):
-        return addr
+from ivre import utils
 
 
 def disp_rec(r):
     firstseen = r['firstseen']
-    if not isinstance(firstseen, datetime.datetime):
-        firstseen = datetime.datetime.fromtimestamp(firstseen)
     lastseen = r['lastseen']
-    if not isinstance(lastseen, datetime.datetime):
-        lastseen = datetime.datetime.fromtimestamp(lastseen)
     if 'addr' in r and r['addr']:
         if r['source'].startswith('PTR-'):
-            print '%s PTR %s (%s, %s time%s, %s - %s)' % (
-                convert_ip(r['addr']),
+            print('%s PTR %s (%s, %s time%s, %s - %s)' % (
+                utils.force_int2ip(r['addr']),
                 r['value'], r['source'][4:], r['count'],
                 r['count'] > 1 and 's' or '',
                 firstseen,
                 lastseen,
-            )
-        elif r['source'].startswith('A-'):
-            print '%s A %s (%s, %s time%s, %s - %s)' % (
+            ))
+        elif r['source'].startswith('A-') or r['source'].startswith('AAAA-'):
+            print('%s %s %s (%s, %s time%s, %s - %s)' % (
                 r['value'],
-                convert_ip(r['addr']),
-                r['source'][2:], r['count'],
+                r['source'].split('-', 1)[0],
+                utils.force_int2ip(r['addr']),
+                ':'.join(r['source'].split('-')[1:]),
+                r['count'],
                 r['count'] > 1 and 's' or '',
                 firstseen,
                 lastseen,
-            )
+            ))
         else:
-            print 'WARNING', r
+            utils.LOGGER.warning("Cannot display record %r", r)
     else:
         if r['source'].split('-')[0] in ['CNAME', 'NS', 'MX']:
-            print '%s %s %s (%s, %s time%s, %s - %s)' % (
+            print('%s %s %s (%s, %s time%s, %s - %s)' % (
                 r['value'],
-                r['source'].split('-')[0],
+                r['source'].split('-', 1)[0],
                 r['targetval'],
                 ':'.join(r['source'].split('-')[1:]),
                 r['count'],
                 r['count'] > 1 and 's' or '',
                 firstseen,
                 lastseen,
-            )
+            ))
         else:
-            print 'WARNING', r
+            utils.LOGGER.warning("Cannot display record %r", r)
+
 
 def main():
     baseflt = db.passive.searchrecontype('DNS_ANSWER')
     subdomains = False
     try:
-        opts, args = getopt.getopt(sys.argv[1:],
-                                   "s:h",
-                                   [
-                                       # filters
-                                       "sensor=",
-                                       # subdomains
-                                       "sub",
-                                       "help",
-                                   ])
+        opts, args = getopt.getopt(
+            sys.argv[1:],
+            "s:h",
+            [
+                # filters
+                "sensor=",
+                # subdomains
+                "sub",
+                "help",
+            ],
+        )
     except getopt.GetoptError as err:
         sys.stderr.write(str(err) + '\n')
         sys.exit(-1)
@@ -111,7 +107,7 @@ def main():
             sys.exit(0)
         else:
             sys.stderr.write(
-                '%r %r not undestood (this is probably a bug).\n' % (o, a))
+                '%r %r not understood (this is probably a bug).\n' % (o, a))
             sys.exit(-1)
     first = True
     flts = []
@@ -119,19 +115,19 @@ def main():
         if first:
             first = False
         else:
-            print
-        if ipaddr.match(a) or a.isdigit():
+            print()
+        if utils.IPADDR.search(a) or a.isdigit():
             flts.append(db.passive.flt_and(baseflt, db.passive.searchhost(a)))
         else:
             flts += [
                 db.passive.flt_and(
                     baseflt,
                     db.passive.searchdns(
-                        ivre.utils.str2regexp(a), subdomains=subdomains)),
+                        utils.str2regexp(a), subdomains=subdomains)),
                 db.passive.flt_and(
                     baseflt,
                     db.passive.searchdns(
-                        ivre.utils.str2regexp(a),
+                        utils.str2regexp(a),
                         reverse=True, subdomains=subdomains))
             ]
     for flt in flts:

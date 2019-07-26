@@ -1,6 +1,6 @@
 /*
  * This file is part of IVRE.
- * Copyright 2011 - 2016 Pierre LALET <pierre.lalet@cea.fr>
+ * Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
  *
  * IVRE is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
@@ -26,17 +26,12 @@ ivreWebUi.directive("sigmaGraph", function () {
         //labelAlignment: "inside",
         singleHover: true,
 
-        defaultLabelColor: "#ccc",
         labelColor: "default",
         labelThreshold: 8,
 
-        defaultNodeColor: '#666',
-        defaultNodeHoverColor: '#c00',
         nodeHoverColor: 'default',
         //borderSize: 10,
 
-        defaultEdgeColor: '#ccc',
-        defaultEdgeHoverColor: '#c00',
         edgeColor: 'default',
         edgeHoverColor: 'default',
 
@@ -54,11 +49,15 @@ ivreWebUi.directive("sigmaGraph", function () {
         drawEdgeLabels: false,
         animationsTime: 5000,
 
-        nodeHaloColor: '#444444',
-        edgeHaloColor: '#444444',
         nodeHaloSize: 10,
         edgeHaloSize: 5,
     };
+
+
+    function get_sigma_settings(scope) {
+        // default_sigma_settings are overwritten by theme sigma settings
+        return Object.assign(default_sigma_settings, scope.theme.sigma);
+    }
 
     return {
         restrict: "E",
@@ -70,10 +69,10 @@ ivreWebUi.directive("sigmaGraph", function () {
                     container: element[0].id,
                     type: 'canvas'
                 },
-                settings: default_sigma_settings,
+                settings: get_sigma_settings(scope)
             });
 
-            // Instanciate the ActiveState plugin:
+            // Instantiate the ActiveState plugin:
             var activeState = sigma.plugins.activeState(s);
 
             // Initialize the dragNodes plugin:
@@ -111,10 +110,15 @@ ivreWebUi.directive("eltDetails", function () {
 });
 
 ivreWebUi.factory("graphService", function () {
-    node_colors = {
-        // [client, server, hidden_client, hidden_server]
-        "Host": ["#666", "#ddd", "#111", "#333"],
+    var node_colors = {
+        // Default dark colors
+        // [client, server, hidden client, hidden server]
+        "Host": ["#666", "#ddd", "#111", "#333"]
     };
+
+    function set_node_colors(colors) {
+        node_colors["Host"] = colors; 
+    }
 
     // http://stackoverflow.com/questions/7616461
     function hashCode(s){
@@ -122,7 +126,7 @@ ivreWebUi.factory("graphService", function () {
             a=((a<<5)-a)+b.charCodeAt(0);
             return a&a
         },0);
-    };
+    }
 
     function hex_color_to_rgba(hex, opacity){
         if (opacity === undefined) {
@@ -136,11 +140,11 @@ ivreWebUi.factory("graphService", function () {
 
         result = 'rgba('+r+','+g+','+b+','+opacity+')';
         return result;
-    };
+    }
 
     function _hex_color_to_rgba_wrapper(value) {
         return hex_color_to_rgba(value, 1);
-    };
+    }
 
     var NC = 8;
     var EDGE_PALETTE = {
@@ -151,7 +155,7 @@ ivreWebUi.factory("graphService", function () {
 
     function str_to_color(str) {
         return EDGE_PALETTE.other[hashCode(str) % 8];
-    };
+    }
 
     function edge_color(s, edge) {
         // s is unused here
@@ -173,7 +177,7 @@ ivreWebUi.factory("graphService", function () {
         } else {
             edge.color = str_to_color(edge.labels[0]);
         }
-    };
+    }
 
     function node_color(s, node, hidden) {
         in_degree = s.graph.degree(node.id, "in");
@@ -183,7 +187,7 @@ ivreWebUi.factory("graphService", function () {
         } else {
             node.color = hidden ? "#111" : str_to_color(node.labels[0] || "");
         }
-    };
+    }
 
     // formatters is an object:
     // { edges: { attr: function }, nodes: { attr: function }}
@@ -221,7 +225,7 @@ ivreWebUi.factory("graphService", function () {
         });
         sigma.canvas.edges.autoCurve(s);
         s.refresh();
-    };
+    }
 
     function update_layout(s) {
         // Possible layouts and config
@@ -255,7 +259,7 @@ ivreWebUi.factory("graphService", function () {
         sigma.layouts.fruchtermanReingold.start(s);
     }
 
-    // Post instanciation sigma conf
+    // Post instantiation sigma conf
     function setup(s, formatters) {
         update_display(s, formatters);
         console.log("Nodes: " + s.graph.nodes().length);
@@ -268,7 +272,7 @@ ivreWebUi.factory("graphService", function () {
       s.renderers[0].halo({
         nodes: s.graph.nodes()
       });
-    };
+    }
 
     function expand_to_neighbors(s, nodes, edges) {
         var adjacentNodes = nodes,
@@ -299,18 +303,18 @@ ivreWebUi.factory("graphService", function () {
 
         // Render halo
         s.renderers[0].halo(to_halo);
-    };
+    }
 
     function enable_halo(s) {
         s.bind('hovers', function(e) {
             set_halo(s, e.data.enter.nodes, e.data.enter.edges);
         });
-    };
+    }
 
     function set_opacity(elt, alpha) {
         // Change alpha component of rgba(r,g,b,a)
         elt.color = elt.color.replace(/, *[\d.]+\)/, "," + alpha + ")");
-    };
+    }
 
     function set_visible(s, nodes, edges, min, max) {
         var min = min === undefined ? 0 : min;
@@ -331,11 +335,11 @@ ivreWebUi.factory("graphService", function () {
             set_opacity(edge, max);
         });
         s.refresh();
-    };
+    }
 
     function has_details(s, elt) {
         return elt === undefined || elt.has_details === true;
-    };
+    }
 
     function add_details(s, elt, data) {
         elt.has_details = true;
@@ -348,7 +352,7 @@ ivreWebUi.factory("graphService", function () {
         } else {
             console.log("Unsupported details format for " + elt.labels);
         }
-    };
+    }
 
     return {
         update_display: update_display,
@@ -359,13 +363,14 @@ ivreWebUi.factory("graphService", function () {
         set_visible: set_visible,
         has_details: has_details,
         add_details: add_details,
+        set_node_colors: set_node_colors
     };
 });
 
 
 ivreWebUi
     .controller('IvreFlowCtrl', function ($scope, $http, $compile, $timeout,
-                                          graphService, hashSync) {
+                                          $location, graphService, hashSync) {
         // Menu things
         $scope.enable_tab = function (tab_id) {
             $('.nav-tabs a[href="#' + tab_id + '"]').tab('show');
@@ -389,7 +394,7 @@ ivreWebUi
                     labels: elt.labels,
                     type: type,
                 };
-                url = "cgi-bin/flowjson.py?action=details&q=" +
+                url = "cgi/flows?action=details&q=" +
                          encodeURIComponent(angular.toJson(q));
                 $http.get(url).success(function (data) {
                     graphService.add_details($scope.sigma, elt, data);
@@ -398,7 +403,9 @@ ivreWebUi
         };
 
         $scope.click_elt = function (elt, type, force) {
-            $scope.enable_tab("menu-tab-details");
+            if (elt) {
+                $scope.enable_tab("menu-tab-details");
+            }
             $scope.$apply(function (){
                 $scope.clicked_elt = elt;
                 $scope.cur_elt = elt;
@@ -534,6 +541,9 @@ ivreWebUi
             }
             var dr_w = 1000, dr_h = 10;
             var timerange = d3.extent(data.edges.reduce(function(dates, flow) {
+                if (!flow.data.meta || !flow.data.meta.times) {
+                    return [];
+                }
                 return dates.concat(flow.data.meta.times.map(function(date) {
                     date = new Date(date.replace(" ", "T"));
                     date = new Date(date - (date % config.flow_time_precision));
@@ -549,7 +559,7 @@ ivreWebUi
             var vis = d3.select("#timeline")
                 .append("svg:svg")
                 .attr("viewBox", [0, 0, dr_w, dr_h])
-                .attr("class", "fullfill")
+                .attr("class", "fulfill")
                 .attr("preserveAspectRatio", "none")
                 .append("svg:g");
 
@@ -557,20 +567,22 @@ ivreWebUi
             $scope.date_to_flow = {};
             $scope.flow_to_date = {};
             data.edges.forEach(function(flow) {
-                flow.data.meta.times.forEach(function(date) {
-                    date = new Date(date.replace(" ", "T"));
-                    date = new Date(date - (date % time_prec));
-                    if ($scope.date_to_flow[date] === undefined) {
-                        dates.push(date);
-                        $scope.date_to_flow[date] = {};
-                    }
-                    $scope.date_to_flow[date][flow.id] = true;
+                if (flow.data.meta && flow.data.meta.times) {
+                    flow.data.meta.times.forEach(function(date) {
+                        date = new Date(date.replace(" ", "T"));
+                        date = new Date(date - (date % time_prec));
+                        if ($scope.date_to_flow[date] === undefined) {
+                            dates.push(date);
+                            $scope.date_to_flow[date] = {};
+                        }
+                        $scope.date_to_flow[date][flow.id] = true;
 
-                    if ($scope.flow_to_date[flow.id] === undefined) {
-                        $scope.flow_to_date[flow.id] = {};
-                    }
-                    $scope.flow_to_date[flow.id][date] = true;
-                });
+                        if ($scope.flow_to_date[flow.id] === undefined) {
+                            $scope.flow_to_date[flow.id] = {};
+                        }
+                        $scope.flow_to_date[flow.id][date] = true;
+                    });
+                }
             });
 
             for (date in $scope.date_to_flow) {
@@ -729,10 +741,10 @@ ivreWebUi
             r = $scope.query_ready;
             if (r.nodes && r.edges) {
                 $scope.query.count = false;
-                $scope.load_json_url("cgi-bin/flowjson.py?q=" +
+                $scope.load_json_url("cgi/flows?q=" +
                              encodeURIComponent(angular.toJson($scope.query)));
                 $scope.query.count = true;
-                $http.get("cgi-bin/flowjson.py?q=" +
+                $http.get("cgi/flows?q=" +
                           encodeURIComponent(angular.toJson($scope.query)))
                      .success(function (data) {
                          $scope.counts = data;
@@ -743,7 +755,7 @@ ivreWebUi
 
         $scope.query_attr = function(elt, attr, val, bool) {
             var element_type = elt.source === undefined ? "nodes" : "edges";
-            q = "@" + attr + " = " + val
+            q = attr + " = " + val
             if (!bool) {
                 q = "!" + q;
             }
@@ -849,4 +861,66 @@ ivreWebUi
         };
 
         $scope.is_array = angular.isArray;
+        
+        var themes = {
+            light: {
+                // [client, server, hidden_client, hidden_server]
+                node_colors: ["#000", "#888", "#bbb", "#ccc"],
+                sigma: {
+                    defaultLabelColor: "#333",
+                    defaultNodeColor: '#aaa',
+                    defaultNodeHoverColor: '#c44',
+                    defaultEdgeColor: '#000',
+                    defaultEdgeHoverColor: '#c00',
+                    nodeHaloColor: '#bbb',
+                    edgeHaloColor: '#bbb',
+                }
+            },
+            dark: {
+                node_colors: ["#666", "#ddd", "#111", "#333"],
+                sigma: {
+                    defaultLabelColor: "#ccc",
+                    defaultNodeColor: '#666',
+                    defaultNodeHoverColor: '#c00',
+                    defaultEdgeColor: '#ccc',
+                    defaultEdgeHoverColor: '#c00',
+                    nodeHaloColor: '#444444',
+                    edgeHaloColor: '#444444',
+                }
+            }
+        };
+
+        // Get light_theme from query parameters
+        $scope.light_theme = angular.fromJson($location.search()['light_theme']);
+        $scope.theme_name = $scope.light_theme ? 'light': 'dark';
+        $scope.theme = themes[$scope.theme_name];
+        
+        // Set up current theme
+        d3.select('body').classed($scope.theme_name, true);
+        d3.select('.table').classed('table-dark', $scope.theme_name == 'dark');
+        
+        // Synchronize light_theme var with corresponding query parameter
+        hashSync.sync($scope, 'light_theme', 'light_theme');
+
+        $scope.update_theme = function() {
+            old_theme = $scope.theme_name;
+            $scope.theme_name = $scope.light_theme ? 'light': 'dark';
+            $scope.theme = themes[$scope.theme_name];
+            d3.select('body').classed(old_theme, false);
+            d3.select('body').classed($scope.theme_name, true);
+            d3.select('.table').classed('table-dark', $scope.theme_name == 'dark');
+            graphService.set_node_colors($scope.theme.node_colors);   
+            if ($scope.sigma) {
+                Object.keys($scope.theme.sigma).forEach(function (key) {
+                    $scope.sigma.settings(key, $scope.theme.sigma[key]);
+                });
+                graphService.update_display($scope.sigma, $scope.graph_formatters);
+            }
+        } 
+        
+        // Manage sidebar removal
+        $scope.show_sidebar = true;
+        $scope.toggle_sidebar = function() {
+            $scope.show_sidebar = !$scope.show_sidebar; 
+        };
 });

@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2016 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,15 +18,21 @@
 
 """Parsers for file formats / tool outputs"""
 
+
 import subprocess
 
+
+from builtins import object
+
+
 from ivre.utils import FileOpener
+
 
 class Parser(FileOpener):
     """Parent class for file parsers"""
 
-    def next(self):
-        return self.parse_line(super(Parser, self).next())
+    def __next__(self):
+        return self.parse_line(super(Parser, self).__next__())
 
 
 class CmdParser(object):
@@ -40,8 +46,8 @@ class CmdParser(object):
     def __iter__(self):
         return self
 
-    def next(self):
-        return self.parse_line(self.fdesc.next())
+    def __next__(self):
+        return self.parse_line(next(self.fdesc))
 
     def __enter__(self):
         return self

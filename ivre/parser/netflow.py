@@ -19,10 +19,15 @@
 """Support for NetFlow files"""
 
 import datetime
-from itertools import izip
+
+
+from builtins import zip
+from past.builtins import basestring
+
 
 from ivre import utils
 from ivre.parser import CmdParser
+
 
 class NetFlow(CmdParser):
     """NetFlow log generator"""
@@ -61,7 +66,7 @@ class NetFlow(CmdParser):
         cmd = ["nfdump", "-aq", "-o", self.fmt]
         cmdkargs = {}
         if isinstance(fdesc, basestring):
-            with open(fdesc) as fde:
+            with open(fdesc, 'rb') as fde:
                 if fde.read(2) not in utils.FileOpener.FILE_OPENERS_MAGIC:
                     cmd.extend(["-r", fdesc])
                 else:
@@ -81,7 +86,9 @@ class NetFlow(CmdParser):
 
     @classmethod
     def parse_line(cls, line):
-        fields = dict((name[0], val.strip()) for name, val in izip(cls.fields, line.split(",")))
+        fields = dict((name[0], val.strip())
+                      for name, val in zip(cls.fields,
+                                           line.decode().split(",")))
         fields["proto"] = fields["proto"].lower()
         srv_idx = None
         if fields["proto"] == "icmp":
@@ -128,4 +135,3 @@ class NetFlow(CmdParser):
         fields["csbytes"] = cls.str2int(fields.pop("bytes%d" % srv_idx))
         fields["cspkts"] = cls.str2int(fields.pop("pkts%d" % srv_idx))
         return fields
-

@@ -18,10 +18,16 @@
 
 """Support for Argus log files"""
 
+
 import datetime
-from itertools import izip
+
+
+from builtins import zip
+from past.builtins import basestring
+
 
 from ivre.parser import CmdParser
+
 
 class Argus(CmdParser):
     """Argus log generator"""
@@ -47,7 +53,7 @@ class Argus(CmdParser):
         cmd.extend(self.fields)
         cmd.extend(["-r", fdesc if isinstance(fdesc, basestring) else "-"])
         if pcap_filter is not None:
-            cmd.extend(["-", pcap_filter])
+            cmd.extend(["--", pcap_filter])
         super(Argus, self).__init__(
             cmd, {} if isinstance(fdesc, basestring) else {"stdin": fdesc},
         )
@@ -55,7 +61,8 @@ class Argus(CmdParser):
 
     @classmethod
     def parse_line(cls, line):
-        fields = dict((name, val.strip()) for name, val in izip(cls.fields, line.split(",")))
+        fields = dict((name, val.strip().decode())
+                      for name, val in zip(cls.fields, line.split(b",")))
         for fld in ["sport", "dport"]:
             try:
                 fields[fld] = int(
@@ -63,7 +70,7 @@ class Argus(CmdParser):
                     16 if fields[fld].startswith("0x") else 10,
                 )
             except ValueError:
-                if fields[fld] == "":
+                if not fields[fld]:
                     del fields[fld]
         fields["src"] = fields.pop("saddr")
         fields["dst"] = fields.pop("daddr")
@@ -71,6 +78,10 @@ class Argus(CmdParser):
         fields["cspkts"] = int(fields.pop("spkts"))
         fields["scbytes"] = int(fields.pop("dbytes"))
         fields["scpkts"] = int(fields.pop("dpkts"))
-        fields["start_time"] = datetime.datetime.fromtimestamp(float(fields.pop("stime")))
-        fields["end_time"] = datetime.datetime.fromtimestamp(float(fields.pop("ltime")))
+        fields["start_time"] = datetime.datetime.fromtimestamp(
+            float(fields.pop("stime"))
+        )
+        fields["end_time"] = datetime.datetime.fromtimestamp(
+            float(fields.pop("ltime"))
+        )
         return fields

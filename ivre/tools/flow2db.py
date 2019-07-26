@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,8 +18,6 @@
 
 """Update the flow database from log files"""
 
-import sys
-import time
 
 from ivre import config
 from ivre import utils
@@ -28,59 +26,42 @@ from ivre.db import db
 from ivre.parser.argus import Argus
 # from ivre.parser.bro import BroFile
 from ivre.parser.netflow import NetFlow
-
-# Associates a list of fields that must be present to the
-# link attributes and the accumulators
-FIELD_REQUEST_EXT = [
-    (('sport', 'dport'), ('proto', 'dport'), {'sports': ('{sport}', 5)}),
-    (('type', 'code'), ('proto', 'type'), {'codes': ('{code}', None)}),
-    (('type'), ('proto', 'type'), {}),
-]
-COUNTERS = ["cspkts", "scpkts", "csbytes", "scbytes"]
+from ivre.parser.iptables import Iptables
 
 PARSERS_CHOICE = {
-    #'airodump': Airodump,
+    # 'airodump': Airodump,
     'argus': Argus,
-    #'bro': BroFile,
+    # 'bro': BroFile,
     'netflow': NetFlow,
+    'iptables': Iptables,
 }
+
 
 PARSERS_MAGIC = {
     # Pcap: ARP
-    #'\xa1\xb2\xd3\xc4': None,
-    #'\xd4\xc3\xb2\xa1': None,
+    # '\xa1\xb2\xd3\xc4': None,
+    # '\xd4\xc3\xb2\xa1': None,
     # NetFlow
-    '\x0c\xa5\x01\x00': NetFlow,
+    b'\x0c\xa5\x01\x00': NetFlow,
     # Argus
-    '\x83\x10\x00\x20': Argus,
+    b'\x83\x10\x00\x20': Argus,
     # Bro
-    #'#sep': BroFile,
+    # '#sep': BroFile,
     # Airodump CSV
-    #'\x0d\x0aBS': Airodump,
+    # '\x0d\x0aBS': Airodump,
 }
+
 
 def main():
     """Update the flow database from log files"""
-    try:
-        import argparse
-        parser = argparse.ArgumentParser(description=__doc__)
+    parser, use_argparse = utils.create_argparser(__doc__, extraargs='files')
+    if use_argparse:
         parser.add_argument('files', nargs='*', metavar='FILE',
                             help='Files to import in the flow database')
-    except ImportError:
-        import optparse
-        parser = optparse.OptionParser(description=__doc__)
-        parser.parse_args_orig = parser.parse_args
-        def my_parse_args():
-            res = parser.parse_args_orig()
-            res[0].ensure_value('files', res[1])
-            return res[0]
-        parser.parse_args = my_parse_args
-        parser.add_argument = parser.add_option
-
     parser.add_argument("-v", "--verbose", help="verbose mode",
                         action="store_true")
     parser.add_argument("-t", "--type", help="file type",
-                        choices=PARSERS_CHOICE.keys())
+                        choices=list(PARSERS_CHOICE))
     parser.add_argument("-f", "--pcap-filter",
                         help="pcap filter to apply (when supported)")
     parser.add_argument("-C", "--no-cleanup",
@@ -91,7 +72,6 @@ def main():
     if args.verbose:
         config.DEBUG = True
 
-    query_cache = {}
     for fname in args.files:
         try:
             fileparser = PARSERS_CHOICE[args.type]
@@ -100,8 +80,9 @@ def main():
                 try:
                     fileparser = PARSERS_MAGIC[fdesc.read(4)]
                 except KeyError:
-                    utils.LOGGING.warning(
-                        'Cannot find the appropriate parser for file %r', fname,
+                    utils.LOGGER.warning(
+                        'Cannot find the appropriate parser for file %r',
+                        fname,
                     )
                     continue
         bulk = db.flow.start_bulk_insert()
@@ -109,20 +90,8 @@ def main():
             for rec in fdesc:
                 if not rec:
                     continue
-                linkattrs = ('proto',)
-                accumulators = {}
-                for (fields, sp_linkattrs, sp_accumulators) in FIELD_REQUEST_EXT:
-                    if all(field in rec for field in fields):
-                        linkattrs = sp_linkattrs
-                        accumulators = sp_accumulators
-                        break
-                if linkattrs not in query_cache:
-                    query_cache[linkattrs] = db.flow.add_flow(
-                        ["Flow"], linkattrs, counters=COUNTERS,
-                        accumulators=accumulators)
-                bulk.append(query_cache[linkattrs], rec)
-        bulk.close()
+                db.flow.flow2flow(bulk, rec)
+        db.flow.bulk_commit(bulk)
 
     if not args.no_cleanup:
         db.flow.cleanup_flows()
-

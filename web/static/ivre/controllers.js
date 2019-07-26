@@ -1,6 +1,6 @@
 /*
  * This file is part of IVRE.
- * Copyright 2011 - 2016 Pierre LALET <pierre.lalet@cea.fr>
+ * Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
  *
  * IVRE is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
@@ -64,24 +64,29 @@ ivreWebUi
 	$scope.unsetparam = function(param) {
 	     return unsetparam($scope.shared.filter, param);
 	};
+	$scope.getparam = function(param) {
+	     return getparam($scope.shared.filter, param);
+	};
 	// notes: here because the buttons are located in the menu and
 	// the results
 	$scope.notes_page = undefined;
 	$scope.notes_display = "none";
 	$scope.shared = {};
 	$scope.togglenotes = function (page) {
+            if(page.substr(0, 4) !== "doc/") {
+                page = config.notesbase.replace(/#IP#/g, page);
+            }
 	    if($scope.notes_display === "none") {
 		hideall();
 		$scope.notes_display = "inline";
-		$scope.notes_page = config.notesbase.replace(/#IP#/g, page);
+		$scope.notes_page = page;
 	    }
-	    else if($scope.notes_page.indexOf(
-		config.notesbase.replace(/#IP#/g, page)) !== -1)
+	    else if($scope.notes_page.indexOf(page) !== -1)
 		$scope.notes_display = "none";
 	    else
-		$scope.notes_page = config.notesbase.replace(/#IP#/g, page);
+		$scope.notes_page = page;
 	};
-	// graphs:here beacause the buttons are located w/ the filters
+	// graphs:here because the buttons are located w/ the filters
 	$scope.build_ip_plane = function() {
 	    var totalnbrres = $scope.shared.filter.count;
 	    if(totalnbrres === undefined)
@@ -154,7 +159,7 @@ ivreWebUi
 	    else {
 		query = "limit:0";
 	    }
-	    return 'cgi-bin/scanjson.py?q=' + encodeURIComponent(query) +
+	    return 'cgi/view?q=' + encodeURIComponent(query) +
 		'&ipsasnumbers=1&datesasstrings=1';
 	};
 	$scope.get_title = function() {return document.title;};
@@ -216,12 +221,20 @@ ivreWebUi
 		    true);
 	};
 	$scope.go_back = function(count) {
+	    if(count === undefined)
+		count = ($scope.getparam('limit') || config.dflt_limit) * 1;
 	    if(!$scope.at_start())
-		$scope.setparam('skip', $scope.firstdisplayed - count - 1 + '', true);
+		$scope.setparam(
+		    'skip',
+		    Math.max($scope.firstdisplayed - count - 1, 0) + '',
+		    true);
 	};
 	$scope.go_forward = function(count) {
+	    if(count === undefined)
+		count = ($scope.getparam('limit') || config.dflt_limit) * 1;
 	    if(!$scope.at_end())
-		$scope.setparam('skip', $scope.firstdisplayed + count - 1 + '', true);
+		$scope.setparam('skip', $scope.firstdisplayed + count - 1 + '',
+				true);
 	};
     })
     .directive('ivreProgressBar', function() {
@@ -317,8 +330,10 @@ ivreWebUi
 	$scope.results = [];
 	$scope.display_mode = "host";
 	$scope.display_mode_args = [];
-	$scope.script_display_mode_needed_scripts_group = function(scripts) {
+	$scope.script_display_mode_needed_scripts_group = function(scripts, vulns) {
 	    if(scripts === undefined || scripts.length === 0)
+		return false;
+	    if(vulns === true && !scripts.some(function (x) { return x.hasOwnProperty('vulns'); }))
 		return false;
 	    if($scope.display_mode_args.length === 0)
 		return true;
@@ -331,6 +346,17 @@ ivreWebUi
 	    if($scope.display_mode_args.length === 0)
 		return true;
 	    return $scope.display_mode_args.indexOf(scriptid) !== -1;
+	};
+	$scope.port_display_mode_needed_port = function(protocol, port) {
+	    if($scope.display_mode_args.length === 0)
+		return true;
+	    return ($scope.display_mode_args.indexOf(String(port)) !== -1 ||
+                    $scope.display_mode_args.indexOf(protocol + '/' + String(port)) !== -1);
+	};
+	$scope.service_display_mode_needed_port = function(service) {
+	    if($scope.display_mode_args.length === 0)
+		return true;
+	    return $scope.display_mode_args.indexOf(service) !== -1;
 	};
 	$scope.set_timer_toggle_preview = function(event, host) {
 	    event = event || window.event;
@@ -488,9 +514,24 @@ ivreWebUi
 	    templateUrl: 'templates/view-screenshots-only.html'
 	};
     })
+    .directive('displayPort', function() {
+        return {
+            templateUrl: 'templates/view-ports-only.html'
+        };
+    })
+    .directive('displayService', function() {
+        return {
+            templateUrl: 'templates/view-services-only.html'
+        };
+    })
     .directive('displayCpe', function() {
 	return {
 	    templateUrl: 'templates/view-cpes-only.html'
+	};
+    })
+    .directive('displayVulnerability', function() {
+	return {
+	    templateUrl: 'templates/view-vulnerabilities-only.html'
 	};
     })
     .directive('hostSummary', function() {
@@ -585,7 +626,7 @@ function set_display_mode(mode) {
     var scope = get_scope('IvreResultListCtrl'), args = [];
     if(mode === undefined)
 	mode = "host"; // default
-    if(mode.substr(0, 7) === "script:") {
+    else if(mode.substr(0, 7) === "script:") {
 	args = mode.substr(7).split(',').reduce(function(accu, value) {
 	    switch(value) {
 	    case "":
@@ -599,6 +640,18 @@ function set_display_mode(mode) {
 	    }
 	}, []);
 	mode = "script";
+    }
+    else if (mode.substr(0, 5) === "port:") {
+        args = mode.substr(5).split(',');
+	mode = "port";
+    }
+    else if (mode.substr(0, 8) === "service:") {
+        args = mode.substr(8).split(',');
+	mode = "service";
+    }
+    else if (mode.substr(0, 13) === "vulnerability") {
+        args = [];
+	mode = "vulnerability";
     }
     scope.display_mode_args = args;
     scope.display_mode = mode;
@@ -800,8 +853,7 @@ ivreWebUi
 		$("#uploadReferer")
 		    .attr("value", document.referrer);
 		$("#upload")
-		    .attr("action",
-			  'cgi-bin/scanupload.py')
+		    .attr("action", 'cgi/view')
 		    .submit();
 	    }
 	};

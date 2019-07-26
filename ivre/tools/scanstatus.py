@@ -16,9 +16,13 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-import sys
-import re
+
+from __future__ import print_function
 import datetime
+import re
+import sys
+import time
+
 
 def main():
     statusline = re.compile(
@@ -60,15 +64,15 @@ def main():
                 end = ''
             else:
                 end = ' ' + end.group('extrainfo') + '.'
-            print 'task %s completed in %d seconds.%s' % (
+            print('task %s completed in %d seconds.%s' % (
                 curtask[0],
                 int(line['time']) - curtask[1],
-                end)
+                end))
             curtask = None
             curprogress = None
 
     if curtask is not None:
-        now = int(datetime.datetime.now().strftime('%s'))
+        now = int(time.time())
         if curprogress is None:
             progress = ''
         else:
@@ -78,8 +82,8 @@ def main():
                            curprogress[1],
                            curprogress[2],
                            datetime.datetime.fromtimestamp(curprogress[3]))
-        print "task %s running for %d seconds.%s" % (
+        print("task %s running for %d seconds.%s" % (
             curtask[0],
             now - curtask[1],
             progress
-        )
+        ))

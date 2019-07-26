@@ -1,5 +1,5 @@
 -- This file is part of IVRE.
--- Copyright 2011 - 2016 Pierre LALET <pierre.lalet@cea.fr>
+-- Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
 --
 -- IVRE is free software: you can redistribute it and/or modify it
 -- under the terms of the GNU General Public License as published by
@@ -16,6 +16,8 @@
 
 local shortport = require "shortport"
 local stdnse = require "stdnse"
+local have_stringaux, stringaux = pcall(require, "stringaux")
+local strsplit = (have_stringaux and stringaux or stdnse).strsplit
 
 description = [[
 
@@ -43,6 +45,8 @@ categories = {"discovery", "safe", "screenshot"}
 --       provided hostname or IP address)
 -- @args http-screenshot.timeout timeout for the phantomjs script
 --       (default: 300s)
+-- @args http-screenshot.geometry viewport size for phantomjs
+--       (default: 1024x768).
 --
 -- @output
 -- PORT   STATE SERVICE
@@ -58,9 +62,12 @@ end
 
 action = function(host, port)
   local timeout = tonumber(stdnse.get_script_args(SCRIPT_NAME .. '.timeout')) or 300
-  local ssl = port.version.service_tunnel == "ssl"
+  local geom = stdnse.get_script_args(SCRIPT_NAME .. '.geometry') or '1024x768'
+  local ssl = port.version.service_tunnel == "ssl" or (
+    port.version.sevice_name == nil and port.service:match("https") ~= nil
+  )
   local port = port.number
-  local fname, strport
+  local fname, strport, width, height, cmd
   local hostname = get_hostname(host)
   if hostname == host.ip then
     fname = ("screenshot-%s-%d.jpg"):format(host.ip, port)
@@ -72,6 +79,9 @@ action = function(host, port)
   else
     strport = (":%d"):format(port)
   end
+  width, height = table.unpack(strsplit("x", geom))
+  width = tonumber(width)
+  height = tonumber(height)
   local tmpfname = os.tmpname()
   local tmpfdesc = io.open(tmpfname, "w")
   tmpfdesc:write(([[
@@ -80,6 +90,10 @@ var webpage = require('webpage');
 function capture(url, fname) {
     var page = webpage.create();
     page.open(url, function() {
+        page.viewportSize = {
+            width: %d,
+            height: %d
+        };
         page.evaluate(function(){
             document.body.bgColor = 'white';
         });
@@ -89,9 +103,14 @@ function capture(url, fname) {
 }
 capture("%s://%s%s", "%s");
 setTimeout(phantom.exit, %d * 1000);
-]]):format(ssl and "https" or "http", hostname, strport, fname, timeout))
+]]):format(width, height, ssl and "https" or "http", hostname, strport, fname,
+	   timeout))
   tmpfdesc:close()
-  os.execute(("phantomjs %s >/dev/null 2>&1"):format(tmpfname))
+  cmd = ("phantomjs --ignore-ssl-errors=true %s >/dev/null 2>&1"):format(tmpfname)
+  if not os.execute(cmd) then
+    -- See <https://github.com/ariya/phantomjs/issues/14376#issuecomment-236213526>
+    os.execute("QT_QPA_PLATFORM=offscreen " .. cmd)
+  end
   os.remove(tmpfname)
   return (os.rename(fname, fname)
 	    and ("Saved to %s"):format(fname)

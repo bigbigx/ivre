@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2016 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,7 +19,10 @@
 """Support for Airodump csv files"""
 
 import datetime
-from itertools import izip
+
+
+from builtins import zip
+
 
 from ivre.parser import Parser
 
@@ -49,26 +52,27 @@ class Airodump(Parser):
         TYPE_DATE: lambda val: datetime.datetime.strptime(val,
                                                           '%Y-%m-%d %H:%M:%S'),
         TYPE_IP: lambda val: '.'.join(elt.strip() for elt in val.split('.')),
-        TYPE_MAC: lambda val: val.lower(),
+        TYPE_MAC: lambda val: val.strip().lower(),
         None: lambda val: val.strip(),
     }
 
     def __init__(self, fname):
-        super(Parser, self).__init__(fname)
+        super(Airodump, self).__init__(fname)
         self.nextline_headers = False
 
-    def next(self):
-        line = super(Parser, self).next().rstrip('\r\n')
+    def parse_line(self, line):
+        line = line.decode().rstrip('\r\n')
         if not line:
             self.nextline_headers = True
-            return self.next()
+            return next(self)
         line = [elt.strip() for elt in line.split(',')]
         if self.nextline_headers:
             self.fields = line
+            self.cur_types = [self.types.get(field) for field in line]
             self.nextline_headers = False
-            return self.next()
-        return dict(izip(
+            return next(self)
+        return dict(zip(
             self.fields,
-            (self.converters.get(self.types.get(self.fields[i]))(val)
+            (self.converters.get(self.cur_types[i])(val)
              for (i, val) in enumerate(line)),
         ))

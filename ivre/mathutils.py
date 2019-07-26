@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,10 +19,10 @@
 
 """
 This module is part of IVRE.
-Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
 
 This sub-module contains math functions missing from Python's math
-module that might be usefull to any other sub-module or script.
+module that might be useful to any other sub-module or script.
 """
 
 
@@ -53,9 +53,14 @@ def factors(n):
     for p in genprimes():
         while n != 1 and n % p == 0:
             yield p
-            n /= p
+            n //= p
         if n == 1:
             break
         if p * p > n:
             yield n
             break
+
+
+if __name__ == '__main__':
+    # Use gcd() here to avoid "unused import / variable" warnings
+    gcd(1, 2)
