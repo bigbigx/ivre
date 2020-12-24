@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -16,11 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-"""
-This module is part of IVRE.
-Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
-
-Standard setup.py file. Run
+"""Standard setup.py file. Run
 
 $ python setup.py build
 # python setup.py install
@@ -30,7 +26,9 @@ $ python setup.py build
 from distutils.core import setup
 from distutils.command.install_data import install_data
 from distutils.command.install_lib import install_lib
+from distutils.dist import DistributionMetadata
 import os
+from tempfile import TemporaryFile
 
 
 VERSION = __import__('ivre').VERSION
@@ -48,6 +46,12 @@ class smart_install_data(install_data):
             self.data_files = [
                 ("/%s" % path if path.startswith('etc/') else path, files)
                 for path, files in self.data_files
+                if path  # skip README.md or any file with an empty path
+            ]
+        else:
+            self.data_files = [
+                (path, files) for path, files in self.data_files
+                if path  # skip README.md or any file with an empty path
             ]
         return install_data.run(self)
 
@@ -76,6 +80,35 @@ class smart_install_lib(install_lib):
         return result
 
 
+with open(os.path.join(os.path.abspath(os.path.dirname('__file__')),
+                       'README.md')) as fdesc:
+    long_description = fdesc.read()
+long_description_content_type = 'text/markdown'
+
+
+# Monkey patching (distutils does not handle Description-Content-Type
+# from long_description_content_type parameter in setup()).
+_write_pkg_file_orig = DistributionMetadata.write_pkg_file
+
+
+def _write_pkg_file(self, file):
+    with TemporaryFile(mode="w+") as tmpfd:
+        _write_pkg_file_orig(self, tmpfd)
+        tmpfd.seek(0)
+        for line in tmpfd:
+            if line.startswith('Metadata-Version: '):
+                file.write('Metadata-Version: 2.1\n')
+            elif line.startswith('Description: '):
+                file.write('Description-Content-Type: %s; charset=UTF-8\n' %
+                           long_description_content_type)
+                file.write(line)
+            else:
+                file.write(line)
+
+
+DistributionMetadata.write_pkg_file = _write_pkg_file
+
+
 setup(
     name='ivre',
     version=VERSION,
@@ -85,17 +118,12 @@ setup(
     download_url='https://github.com/cea-sec/ivre/tarball/master',
     license='GPLv3+',
     description='Network recon framework',
-    long_description="""
-IVRE is a set of tools aimed at gathering and exploiting network
-information.
-
-It consists of a Python library, a Web UI, CLI tools and several
-specialized scripts.
-""",
-    keywords=["network", "network recon", "network cartography",
-              "nmap", "bro", "p0f"],
+    long_description=long_description,
+    long_description_content_type=long_description_content_type,
+    keywords=["network", "network recon", "network cartography", "nmap",
+              "masscan", "zmap", "zgrab", "zdns", "bro", "zeek"],
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "Environment :: Console",
         "Environment :: Web Environment",
         "Intended Audience :: Developers",
@@ -105,49 +133,51 @@ specialized scripts.
         "Intended Audience :: Telecommunications Industry",
         "License :: OSI Approved :: "
         "GNU General Public License v3 or later (GPLv3+)",
-        "Programming Language :: Python :: 2",
-        "Programming Language :: Python :: 2.6",
-        "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.3",
-        "Programming Language :: Python :: 3.4",
-        "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
         "Topic :: Scientific/Engineering :: Information Analysis",
         "Topic :: Security",
         "Topic :: System :: Networking",
         "Topic :: System :: Networking :: Monitoring",
         "Topic :: System :: Software Distribution",
     ],
-    python_requires='>=2.6, !=3.0.*, !=3.1.*, !=3.2.*, <4',
+    python_requires='>=3.6, <4',
     install_requires=[
-        'pycrypto',
+        'cryptography',
         'pymongo>=2.7.2',
-        'future',
+        'pyOpenSSL>=16.1.0',
         'bottle',
     ],
     extras_require={
-        'Flow with Neo4j': ["py2neo>=3,<4"],
-        'PostgreSQL': ["sqlalchemy", "psycopg2"],
+        'TinyDB (experimental)': ["tinydb"],
+        'PostgreSQL (experimental)': ["sqlalchemy", "psycopg2"],
+        'Elasticsearch (experimental)': ["elasticsearch", "elasticsearch-dsl"],
         'GSSAPI authentication': ["python-krbV"],
         'Screenshots': ["PIL"],
         'MediaWiki integration': ["MySQL-python"],
         '3D traceroute graphs': ["dbus-python"],
         'Plots': ["matplotlib"],
     },
-    packages=['ivre', 'ivre/analyzer', 'ivre/db', 'ivre/db/sql', 'ivre/parser',
-              'ivre/tools', 'ivre/web'],
+    packages=['ivre', 'ivre/active', 'ivre/analyzer', 'ivre/data', 'ivre/db',
+              'ivre/db/sql', 'ivre/parser', 'ivre/tools', 'ivre/web'],
     scripts=['bin/ivre'],
     data_files=[
-        ('share/ivre/bro',
-         ['bro/passiverecon2db-ignore.example']),
-        ('share/ivre/bro/ivre',
-         ['bro/ivre/__load__.bro']),
-        ('share/ivre/bro/ivre/passiverecon',
-         ['bro/ivre/passiverecon/__load__.bro',
-          'bro/ivre/passiverecon/bare.bro',
-          'bro/ivre/passiverecon/ja3.bro']),
+        ('', ['README.md']),  # needed for the package description
+        ('share/ivre/zeek',
+         ['zeek/passiverecon2db-ignore.example']),
+        ('share/ivre/zeek/ivre',
+         ['zeek/ivre/__load__.zeek']),
+        ('share/ivre/zeek/ivre/arp',
+         ['zeek/ivre/arp/__load__.zeek']),
+        ('share/ivre/zeek/ivre/passiverecon',
+         ['zeek/ivre/passiverecon/__load__.zeek',
+          'zeek/ivre/passiverecon/bare.zeek',
+          'zeek/ivre/passiverecon/hassh.zeek',
+          'zeek/ivre/passiverecon/ja3.zeek',
+          'zeek/ivre/passiverecon/ntlm.zeek']),
         ('share/ivre/honeyd', ['data/.empty']),
         ('share/ivre/geoip', ['data/.empty']),
         ('share/ivre/data', ['data/ike-vendor-ids']),

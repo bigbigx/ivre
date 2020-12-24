@@ -7,14 +7,14 @@ server, database server) on the same (Debian or Ubuntu) machine.
 
 Please note that, depending on your distribution, the versions of some
 software packages might not be recent enough, particularly for MongoDB
-(version 2.6 minimum) and pymongo (version 2.7.2 minimum). If that's
+(version 3.2 minimum) and pymongo (version 2.7.2 minimum). If that's
 the case, you will have to install those programs on you own,
 referring to their documentation (see `MongoDB on Debian
 <http://docs.mongodb.org/manual/tutorial/install-mongodb-on-debian/>`__
 or `MongoDB on Ubuntu
 <http://docs.mongodb.org/manual/tutorial/install-mongodb-on-ubuntu/>`__
 and `pymongo <https://pypi.python.org/pypi/pymongo/>`__), instead of
-``apt-get``-ting them.
+getting them via ``apt``.
 
 You might also want to adapt it to your needs, architecture, etc.
 
@@ -26,25 +26,12 @@ Install
 
 ::
 
-   $ sudo apt-get -y install mongodb python-pymongo python-crypto \
-   >   python-future python-bottle apache2 libapache2-mod-wsgi dokuwiki
+   $ sudo apt -y --no-install-recommends install mongodb python3-pymongo \
+   >   python3-crypto python3-bottle apache2 libapache2-mod-wsgi-py3 dokuwiki
    $ git clone https://github.com/cea-sec/ivre
    $ cd ivre
-   $ python setup.py build
-   $ sudo python setup.py install
-
-NB: if you are running Debian stable, the dokuwiki package has been
-removed (no idea why: it exists in both oldstable and testing). Run the
-following commands (or similar) if you cannot install dokuwiki, and try
-again:
-
-::
-
-   $ echo 'APT::Default-Release "stable";' | \
-   >   sudo tee /etc/apt/apt.conf.d/99defaultrelease
-   $ echo 'deb http://deb.debian.org/debian testing main' | \
-   >   sudo tee -a /etc/apt/sources.list
-   $ sudo apt-get update
+   $ python3 setup.py build
+   $ sudo python3 setup.py install
 
 Setup
 -----
@@ -91,10 +78,7 @@ Database init, data download & importation
    $ yes | ivre view --init
    $ yes | ivre flowcli --init
    $ yes | sudo ivre runscansagentdb --init
-   $ sudo ivre ipdata --download --import-all
-
-The two last step may take a long time to run (40 minutes on a decent
-server), nothing to worry about.
+   $ sudo ivre ipdata --download
 
 Run a first scan
 ----------------

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -39,9 +39,6 @@ from ivre.db.sql import PassiveCSVFile, ScanCSVFile, SQLDB, SQLDBActive, \
 
 
 class PostgresDB(SQLDB):
-
-    def __init__(self, url):
-        super(PostgresDB, self).__init__(url)
 
     @staticmethod
     def ip2internal(addr):
@@ -88,7 +85,7 @@ class PostgresDB(SQLDB):
         return "\n".join(map(" ".join, req_cur.fetchall()))
 
 
-class BulkInsert(object):
+class BulkInsert:
     """A PostgreSQL transaction, with automatic commits"""
 
     def __init__(self, db, size=None, retries=0):
@@ -119,8 +116,8 @@ class BulkInsert(object):
     def commit(self, query=None, renew=True):
         if query is None:
             last = len(self.queries) - 1
-            for i, query in enumerate(list(self.queries)):
-                self.commit(query=query, renew=True if i < last else renew)
+            for i, q_query in enumerate(list(self.queries)):
+                self.commit(query=q_query, renew=True if i < last else renew)
             return
         q_query, params = self.queries.pop(query)
         self.conn.execute(q_query, *params)
@@ -145,15 +142,10 @@ class BulkInsert(object):
 
 
 class PostgresDBFlow(PostgresDB, SQLDBFlow):
-
-    def __init__(self, url):
-        super(PostgresDBFlow, self).__init__(url)
+    pass
 
 
 class PostgresDBActive(PostgresDB, SQLDBActive):
-
-    def __init__(self, url):
-        super(PostgresDBActive, self).__init__(url)
 
     def _migrate_schema_10_11(self):
         """Converts a record from version 10 to version 11.
@@ -190,16 +182,11 @@ changes.
                             .where(and_(self.tables.script.port == rec.port,
                                         self.tables.script.name == "ssl-cert"))
                             .values(data={"ssl-cert": newinfo},
-                                    output='\n'.join(newout))
+                                    output=newout)
                         )
                         continue
                     try:
-                        pubkeytype = {
-                            'rsaEncryption': 'rsa',
-                            'id-ecPublicKey': 'ec',
-                            'id-dsa': 'dsa',
-                            'dhpublicnumber': 'dh',
-                        }[rec.data['ssl-cert'].pop('pubkeyalgo')]
+                        algo = rec.data['ssl-cert'].pop('pubkeyalgo')
                     except KeyError:
                         pass
                     else:
@@ -207,9 +194,12 @@ changes.
                             update(self.tables.script)
                             .where(and_(self.tables.script.port == rec.port,
                                         self.tables.script.name == "ssl-cert"))
-                            .values(data={"ssl-cert":
-                                          dict(rec.data['ssl-cert'],
-                                               type=pubkeytype)})
+                            .values(
+                                data={"ssl-cert":
+                                      dict(rec.data['ssl-cert'],
+                                           type=utils.PUBKEY_TYPES.get(algo,
+                                                                       algo))}
+                            )
                         )
         self.db.execute(
             update(self.tables.scan)
@@ -292,6 +282,7 @@ insert structures.
             / script:host:<scriptid>
           - cert.* / smb.* / sshkey.*
           - httphdr / httphdr.{name,value} / httphdr:<name>
+          - httpapp / httpapp:<name>
           - modbus.* / s7.* / enip.*
           - mongo.dbs.*
           - vulns.*
@@ -314,8 +305,7 @@ insert structures.
         elif field == "ttl":
             field = self._topstructure(
                 self.tables.port, [self.tables.port.state_reason_ttl],
-                self.tables.port.state_reason_ttl != None,
-                # noqa: E711 (BinaryExpression)
+                self.tables.port.state_reason_ttl != None,  # noqa: E711
             )
         elif field == "ttlinit":
             field = self._topstructure(
@@ -323,8 +313,7 @@ insert structures.
                 [func.least(255, func.power(2, func.ceil(
                     func.log(2, self.tables.port.state_reason_ttl)
                 )))],
-                self.tables.port.state_reason_ttl != None,
-                # noqa: E711 (BinaryExpression)
+                self.tables.port.state_reason_ttl != None,  # noqa: E711
             )
             outputproc = int
         elif field.startswith('port:'):
@@ -540,7 +529,7 @@ insert structures.
                 )
             elif ':' in info:
                 info = info.split(':', 1)
-                flt = self.flt_and(flt, self.searchproduct(info[1],
+                flt = self.flt_and(flt, self.searchproduct(product=info[1],
                                                            service=info[0]))
                 field = self._topstructure(
                     self.tables.port,
@@ -599,10 +588,12 @@ insert structures.
             subfield = field[5:]
             field = self._topstructure(
                 self.tables.script,
-                [self.tables.script.data['ssl-cert'][subfield]],
-                and_(self.tables.script.name == 'ssl-cert',
-                     self.tables.script.data['ssl-cert'].has_key(subfield))
-            )  # noqa: W601 (BinaryExpression)
+                [func.jsonb_array_elements(
+                    self.tables.script.data['ssl-cert'],
+                ).op('->' if subfield in ['subject', 'issuer', 'pubkey'] else
+                     '->>')(subfield)],
+                self.tables.script.name == 'ssl-cert',
+            )
         elif field == 'useragent' or field.startswith('useragent:'):
             if field == 'useragent':
                 flt = self.flt_and(flt, self.searchuseragent())
@@ -614,7 +605,7 @@ insert structures.
                     func.jsonb_array_elements(
                         self.tables.script.data['http-user-agent'],
                     ).alias('http_user_agent')
-                )  # noqa: W601 (BinaryExpression)
+                )
             else:
                 subfield = utils.str2regexp(field[10:])
                 flt = self.flt_and(flt,
@@ -631,7 +622,7 @@ insert structures.
                     func.jsonb_array_elements(
                         self.tables.script.data['http-user-agent'],
                     ).alias('http_user_agent')
-                )  # noqa: W601 (BinaryExpression)
+                )
         elif field == 'ja3-client' or (
                 field.startswith('ja3-client') and field[10] in ':.'
         ):
@@ -654,7 +645,7 @@ insert structures.
                     func.jsonb_array_elements(
                         self.tables.script.data['ssl-ja3-client'],
                     ).alias('ssl_ja3_client')
-                )  # noqa: W601 (BinaryExpression)
+                )
             else:
                 field = self._topstructure(
                     self.tables.script,
@@ -668,7 +659,7 @@ insert structures.
                     func.jsonb_array_elements(
                         self.tables.script.data['ssl-ja3-client'],
                     ).alias('ssl_ja3_client')
-                )  # noqa: W601 (BinaryExpression)
+                )
         elif field == 'ja3-server' or (
                 field.startswith('ja3-server') and field[10] in ':.'
         ):
@@ -728,7 +719,7 @@ insert structures.
                 func.jsonb_array_elements(
                     self.tables.script.data['ssl-ja3-server'],
                 ).alias('ssl_ja3_server')
-            )  # noqa: W601 (BinaryExpression)
+            )
         elif field == "source":
             field = self._topstructure(self.tables.scan,
                                        [self.tables.scan.source])
@@ -804,20 +795,22 @@ insert structures.
                 [self.tables.script.data['modbus-discover'][subfield]],
                 and_(self.tables.script.name == 'modbus-discover',
                      self.tables.script.data['modbus-discover']
-                     .has_key(subfield)),
-                # noqa: W601 (BinaryExpression)
+                     .has_key(subfield)),  # noqa: W601
             )
         elif field.startswith('s7.'):
             subfield = field[3:]
             field = self._topstructure(
                 self.tables.script,
                 [self.tables.script.data['s7-info'][subfield]],
-                and_(self.tables.script.name == 's7-info',
-                     self.tables.script.data['s7-info'].has_key(subfield)),
-                # noqa: W601 (BinaryExpression)
+                and_(
+                    self.tables.script.name == 's7-info',
+                    self.tables.script.data[
+                        's7-info'
+                    ].has_key(subfield),  # noqa: W601
+                ),
             )
         elif field == 'httphdr':
-            flt = self.flt_and(flt, self.searchscript(name="http-headers"))
+            flt = self.flt_and(flt, self.searchhttphdr())
             field = self._topstructure(
                 self.tables.script,
                 [column("hdr").op('->>')('name').label("name"),
@@ -829,7 +822,7 @@ insert structures.
                 ).alias('hdr'),
             )
         elif field.startswith('httphdr.'):
-            flt = self.flt_and(flt, self.searchscript(name="http-headers"))
+            flt = self.flt_and(flt, self.searchhttphdr())
             field = self._topstructure(
                 self.tables.script,
                 [column("hdr").op('->>')(field[8:]).label("topvalue")],
@@ -840,16 +833,44 @@ insert structures.
                 ).alias('hdr'),
             )
         elif field.startswith('httphdr:'):
-            flt = self.flt_and(flt, self.searchhttphdr(name=field[8:].lower()))
+            subfield = field[8:].lower()
+            flt = self.flt_and(flt, self.searchhttphdr(name=subfield))
             field = self._topstructure(
                 self.tables.script,
                 [column("hdr").op('->>')("value").label("value")],
                 and_(self.tables.script.name == 'http-headers',
-                     column("hdr").op('->>')("name") == field[8:].lower()),
+                     column("hdr").op('->>')("name") == subfield),
                 [column("value")],
                 func.jsonb_array_elements(
                     self.tables.script.data['http-headers']
                 ).alias('hdr'),
+            )
+        elif field == 'httpapp':
+            flt = self.flt_and(flt, self.searchhttpapp())
+            field = self._topstructure(
+                self.tables.script,
+                [column("app").op('->>')('application').label("application"),
+                 column("app").op('->>')('version').label("version")],
+                self.tables.script.name == 'http-app',
+                [column("application"), column("version")],
+                func.jsonb_array_elements(
+                    self.tables.script.data['http-app']
+                ).alias('app'),
+            )
+        elif field.startswith('httpapp:'):
+            subfield = field[8:]
+            flt = self.flt_and(flt, self.searchhttpapp(name=subfield))
+            field = self._topstructure(
+                self.tables.script,
+                [column("app").op('->>')("version").label("version")],
+                and_(
+                    self.tables.script.name == 'http-app',
+                    column("app").op('->>')("application") == subfield
+                ),
+                [column("version")],
+                func.jsonb_array_elements(
+                    self.tables.script.data['http-app']
+                ).alias('app'),
             )
         else:
             raise NotImplementedError()
@@ -892,12 +913,11 @@ insert structures.
                      "_id": result[1:] if len(result) > 2 else result[1]}
                     for result in
                     self.db.execute(req.order_by(order).limit(topnbr)))
-        else:
-            return ({"count": result[0],
-                     "_id": outputproc(result[1:] if len(result) > 2
-                                       else result[1])}
-                    for result in
-                    self.db.execute(req.order_by(order).limit(topnbr)))
+        return ({"count": result[0],
+                 "_id": outputproc(result[1:] if len(result) > 2
+                                   else result[1])}
+                for result in
+                self.db.execute(req.order_by(order).limit(topnbr)))
 
     def _features_port_list(self, flt, yieldall, use_service,
                             use_product, use_version):
@@ -931,10 +951,9 @@ insert structures.
         if not yieldall:
             req = req.order_by(*(nullsfirst(fld) for fld in fields))
             return self.db.execute(req)
-        else:
-            # results will be modified, we cannot keep a RowProxy
-            # instance, so we convert the results to lists
-            return (list(rec) for rec in self.db.execute(req))
+        # results will be modified, we cannot keep a RowProxy
+        # instance, so we convert the results to lists
+        return (list(rec) for rec in self.db.execute(req))
 
     def _features_port_get(self, features, flt, yieldall, use_service,
                            use_product, use_version):
@@ -1007,9 +1026,6 @@ insert structures.
 
 class PostgresDBNmap(PostgresDBActive, SQLDBNmap):
 
-    def __init__(self, url):
-        super(PostgresDBNmap, self).__init__(url)
-
     def store_scan_doc(self, scan):
         scan = scan.copy()
         if 'start' in scan:
@@ -1034,6 +1050,19 @@ class PostgresDBNmap(PostgresDBActive, SQLDBNmap):
             utils.LOGGER.debug("SCAN STORED: %r", utils.encode_hex(scanfileid))
         else:
             self.db.execute(insrt)
+
+    def update_scan_doc(self, scan_id, data):
+        data = data.copy()
+        if 'end' in data:
+            data['end'] = datetime.datetime.utcfromtimestamp(
+                int(data['end'])
+            )
+        self.db.execute(
+            update(self.tables.scanfile)
+            .where(self.tables.scanfile.sha256 == utils.decode_hex(scan_id))
+            .values(**dict((key, data[key]) for key in ['end', 'elapsed']
+                           if key in data))
+        )
 
     def _store_host(self, host):
         addr = self.ip2internal(host['addr'])
@@ -1094,6 +1123,17 @@ class PostgresDBNmap(PostgresDBActive, SQLDBNmap):
             ).fetchone()[0]
             for script in scripts:
                 name, output = script.pop('id'), script.pop('output')
+                if 'ssl-cert' in script:
+                    for cert in script['ssl-cert']:
+                        for fld in ['not_before', 'not_after']:
+                            if fld not in cert:
+                                continue
+                            if isinstance(cert[fld], datetime.datetime):
+                                cert[fld] = cert[fld].timestamp()
+                            elif isinstance(cert[fld], str):
+                                cert[fld] = utils.all2datetime(
+                                    cert[fld]
+                                ).timestamp()
                 self.bulk.append(insert(self.tables.script).values(
                     port=portid,
                     name=name,
@@ -1152,9 +1192,6 @@ class PostgresDBNmap(PostgresDBActive, SQLDBNmap):
 
 
 class PostgresDBView(PostgresDBActive, SQLDBView):
-
-    def __init__(self, url):
-        super(PostgresDBView, self).__init__(url)
 
     def _store_host(self, host):
         addr = self.ip2internal(host['addr'])
@@ -1239,6 +1276,17 @@ class PostgresDBView(PostgresDBActive, SQLDBView):
             ).fetchone()[0]
             for script in scripts:
                 name, output = script.pop('id'), script.pop('output')
+                if 'ssl-cert' in script:
+                    for cert in script['ssl-cert']:
+                        for fld in ['not_before', 'not_after']:
+                            if fld not in cert:
+                                continue
+                            if isinstance(cert[fld], datetime.datetime):
+                                cert[fld] = cert[fld].timestamp()
+                            elif isinstance(cert[fld], str):
+                                cert[fld] = utils.all2datetime(
+                                    cert[fld]
+                                ).timestamp()
                 if newest:
                     insrt = postgresql.insert(self.tables.script)
                     self.bulk.append(insrt
@@ -1309,16 +1357,15 @@ class PostgresDBPassive(PostgresDB, SQLDBPassive):
             self.tables.passive.port, self.tables.passive.source,
             self.tables.passive.value, self.tables.passive.targetval,
             self.tables.passive.info, unique=True,
-            postgresql_where=self.tables.passive.addr != None,
-            # noqa: E711 (BinaryExpression)
+            postgresql_where=self.tables.passive.addr != None,  # noqa: E711
         )
         Index(
             'ix_passive_record_noaddr', self.tables.passive.sensor,
             self.tables.passive.recontype, self.tables.passive.port,
             self.tables.passive.source, self.tables.passive.value,
             self.tables.passive.targetval, self.tables.passive.info,
-            unique=True, postgresql_where=self.tables.passive.addr == None,
-            # noqa: E711 (BinaryExpression)
+            unique=True,
+            postgresql_where=self.tables.passive.addr == None,  # noqa: E711
         )
 
     def _insert_or_update(self, timestamp, values, lastseen=None):
@@ -1338,16 +1385,14 @@ class PostgresDBPassive(PostgresDB, SQLDBPassive):
             stmt = stmt.on_conflict_do_update(
                 index_elements=['addr', 'sensor', 'recontype', 'port',
                                 'source', 'value', 'targetval', 'info'],
-                index_where=self.tables.passive.addr != None,
-                # noqa: E711 (BinaryExpression)
+                index_where=self.tables.passive.addr != None,  # noqa: E711
                 set_=upsert,
             )
         else:
             stmt = stmt.on_conflict_do_update(
                 index_elements=['sensor', 'recontype', 'port',
                                 'source', 'value', 'targetval', 'info'],
-                index_where=self.tables.passive.addr == None,
-                # noqa: E711 (BinaryExpression)
+                index_where=self.tables.passive.addr == None,  # noqa: E711
                 set_=upsert,
             )
         self.db.execute(stmt)
@@ -1401,10 +1446,9 @@ class PostgresDBPassive(PostgresDB, SQLDBPassive):
                                 tmp.columns[col] for col in [
                                     'sensor', 'port', 'recontype', 'source',
                                     'targetval', 'value', 'info', 'moreinfo'
-                                    ]])\
+                                ]])\
                     .where(
-                        tmp.columns['addr'] != None
-                        # noqa: E711 (BinaryExpression)
+                        tmp.columns['addr'] != None  # noqa: E711
                     )\
                     .group_by(*(tmp.columns[col] for col in [
                         'addr', 'sensor', 'port', 'recontype', 'source',
@@ -1414,8 +1458,7 @@ class PostgresDBPassive(PostgresDB, SQLDBPassive):
                 .on_conflict_do_update(
                     index_elements=['addr', 'sensor', 'recontype', 'port',
                                     'source', 'value', 'targetval', 'info'],
-                    index_where=self.tables.passive.addr != None,
-                    # noqa: E711 (BinaryExpression)
+                    index_where=self.tables.passive.addr != None,  # noqa: E711
                     set_={
                         'firstseen': func.least(
                             self.tables.passive.firstseen,
@@ -1447,10 +1490,9 @@ class PostgresDBPassive(PostgresDB, SQLDBPassive):
                                 tmp.columns[col] for col in [
                                     'sensor', 'port', 'recontype', 'source',
                                     'targetval', 'value', 'info', 'moreinfo'
-                                    ]])\
+                                ]])\
                     .where(
-                        tmp.columns['addr'] == None
-                        # noqa: E711 (BinaryExpression)
+                        tmp.columns['addr'] == None  # noqa: E711
                     )\
                     .group_by(*(tmp.columns[col] for col in [
                         'addr', 'sensor', 'port', 'recontype', 'source',

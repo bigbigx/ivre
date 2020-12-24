@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -17,34 +17,22 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-"""
-This module is part of IVRE.
-Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
-
-This sub-module contains the classes and functions to handle
+"""This sub-module contains the classes and functions to handle
 information about IP addresses (mostly from Maxmind GeoIP files).
 
 """
 
 
-from __future__ import print_function
 import codecs
 import csv
 import os.path
 import sys
 import tarfile
-try:
-    from urllib.request import build_opener
-except ImportError:
-    from urllib2 import build_opener
+from urllib.request import build_opener
 import zipfile
 
 
-from builtins import range
-from future.utils import viewitems, viewvalues
-
-
-from ivre import utils, config
+from ivre import VERSION, utils, config
 
 
 def bgp_raw_to_csv(fname, out):
@@ -57,10 +45,10 @@ def bgp_raw_to_csv(fname, out):
             if cur:
                 if start >= cur[0] and stop <= cur[1]:
                     continue
-                if start >= cur[0] and start <= cur[1]:
+                if cur[0] <= start <= cur[1]:
                     cur = (cur[0], stop)
                     continue
-                if stop >= cur[0] and stop <= cur[1]:
+                if cur[0] <= stop <= cur[1]:
                     cur = (start, cur[1])
                     continue
                 if start <= cur[0] and stop >= cur[1]:
@@ -137,6 +125,9 @@ PARSERS = [
     (gunzip, ['GeoLite2-ASN.tar.gz'], {}),
     (untar_all, ['GeoLite2-ASN.tar'],
      {"cond": lambda fdesc: fdesc.name.endswith('.mmdb')}),
+    (gunzip, ['GeoLite2-dumps.tar.gz'], {}),
+    (untar_all, ['GeoLite2-dumps.tar'],
+     {"cond": lambda fdesc: fdesc.name.endswith('.csv')}),
     (bgp_raw_to_csv, ['BGP.raw', 'BGP.csv'], {}),
 ]
 
@@ -144,8 +135,19 @@ PARSERS = [
 def download_all(verbose=False):
     utils.makedirs(config.GEOIP_PATH)
     opener = build_opener()
-    opener.addheaders = [('User-agent', 'IVRE/1.0 +https://ivre.rocks/')]
-    for fname, url in viewitems(config.IPDATA_URLS):
+    opener.addheaders = [('User-agent',
+                          'IVRE/%s +https://ivre.rocks/' % VERSION)]
+    for fname, url in config.IPDATA_URLS.items():
+        if url is None:
+            if not fname.startswith('GeoLite2-'):
+                continue
+            if fname.startswith('GeoLite2-dumps.'):
+                continue
+            basename, ext = fname.split('.', 1)
+            url = ('https://download.maxmind.com/app/geoip_download?'
+                   'edition_id=%s&suffix=%s&license_key=%s' % (
+                       basename, ext, config.MAXMIND_LICENSE_KEY,
+                   ))
         outfile = os.path.join(config.GEOIP_PATH, fname)
         if verbose:
             sys.stdout.write("Downloading %s to %s: " % (url, outfile))
@@ -159,7 +161,15 @@ def download_all(verbose=False):
         sys.stdout.write("Unpacking: ")
         sys.stdout.flush()
     for func, args, kargs in PARSERS:
-        func(*args, **kargs)
+        try:
+            func(*args, **kargs)
+        except Exception:
+            utils.LOGGER.warning(
+                "A parser failed: %s(%s, %s)", func.__name__,
+                ', '.join(args),
+                ', '.join('%s=%r' % k_v for k_v in kargs.items()),
+                exc_info=True,
+            )
     if verbose:
         sys.stdout.write("done.\n")
 
@@ -198,7 +208,7 @@ def locids_by_region(country_code, reg_code):
             yield int(line['geoname_id'])
 
 
-class IPRanges(object):
+class IPRanges:
 
     def __init__(self, ranges=None):
         """ranges must be given in the "correct" order *and* not
@@ -216,9 +226,76 @@ class IPRanges(object):
         self.ranges[self.length] = (start, length)
         self.length += int(length)  # in case it's a long
 
+    def union(self, *others):
+        res = IPRanges()
+        gens = [self.iter_int_ranges()] + [o.iter_int_ranges() for o in others]
+        curs = []
+        # We cannot use a `for itr in itrs` loop here because itrs is
+        # modified in the loop.
+        i = 0
+        while i < len(gens):
+            try:
+                curs.append(list(next(gens[i])))
+            except StopIteration:
+                # We need to remove the corresponding generator from
+                # gens, which happens to be the n-th where n is the
+                # current length of next_recs.
+                del gens[len(curs)]  # Do not increment i here
+            else:
+                i += 1
+        while curs:
+            cur_range = min(curs, key=lambda k: k[0])
+            while True:
+                # We cannot use a `for i in range(len(itrs))` loop because
+                # itrs is modified in the loop.
+                i = 0
+                cur_range_modified = False
+                while i < len(gens):
+                    needs_continue = False
+                    while curs[i][1] < cur_range[1]:
+                        try:
+                            curs[i] = list(next(gens[i]))
+                        except StopIteration:
+                            del gens[i]
+                            del curs[i]
+                            needs_continue = True
+                            break  # Do not increment i
+                        i += 1
+                    if needs_continue:
+                        continue
+                    if curs[i][0] <= cur_range[1] + 1:
+                        cur_range[1] = curs[i][1]
+                        cur_range_modified = True
+                        try:
+                            curs[i] = list(next(gens[i]))
+                        except StopIteration:
+                            del gens[i]
+                            del curs[i]
+                            continue  # Do not increment i
+                    i += 1
+                if not cur_range_modified:
+                    break
+            res.append(*cur_range)
+        return res
+
+    def iter_int_ranges(self):
+        for start, length in sorted(self.ranges.values()):
+            yield start, start + length - 1
+
     def iter_ranges(self):
-        for start, length in sorted(viewvalues(self.ranges)):
+        for start, length in sorted(self.ranges.values()):
             yield utils.int2ip(start), utils.int2ip(start + length - 1)
+
+    def iter_nets(self):
+        for start, length in sorted(self.ranges.values()):
+            for net in utils.range2nets((utils.int2ip(start),
+                                         utils.int2ip(start + length - 1))):
+                yield net
+
+    def iter_addrs(self):
+        for start, length in sorted(self.ranges.values()):
+            for val in range(start, start + length):
+                yield utils.int2ip(val)
 
     def __len__(self):
         return self.length
@@ -250,6 +327,13 @@ def get_ranges_by_data(datafile, condition):
 def get_ranges_by_country(code):
     return get_ranges_by_data(
         "GeoLite2-Country.dump-IPv4.csv",
+        lambda line: line[2] == code,
+    )
+
+
+def get_ranges_by_registered_country(code):
+    return get_ranges_by_data(
+        "GeoLite2-RegisteredCountry.dump-IPv4.csv",
         lambda line: line[2] == code,
     )
 
@@ -287,207 +371,3 @@ def get_ranges_by_asnum(asnum):
 
 def get_routable_ranges():
     return get_ranges_by_data('BGP.csv', lambda _: True)
-
-
-def get_ips_by_data(datafile, condition, skip=0, maxnbr=None):
-    res = []
-    for start, stop in _get_by_data(datafile, condition):
-        curaddrs = [utils.int2ip(addr) for addr in range(start, stop + 1)]
-        if skip > 0:
-            skip -= len(curaddrs)
-            if skip <= 0:
-                curaddrs = curaddrs[skip:]
-            else:
-                curaddrs = []
-        if maxnbr is not None:
-            maxnbr -= len(curaddrs)
-            if maxnbr < 0:
-                return res + curaddrs[:maxnbr]
-            elif maxnbr == 0:
-                return res + curaddrs
-        res += curaddrs
-    return res
-
-
-def get_ips_by_country(code, **kargs):
-    return get_ips_by_data(
-        "GeoLite2-Country.dump-IPv4.csv",
-        lambda line: line[2] == code,
-        **kargs
-    )
-
-
-def get_ips_by_location(locid, **kargs):
-    return get_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[5] == str(locid),
-        **kargs
-    )
-
-
-def get_ips_by_city(country_code, city, **kargs):
-    return get_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and
-        line[4] == utils.encode_b64(
-            (city or "").encode('utf-8')
-        ).decode('utf-8'),
-        **kargs
-    )
-
-
-def get_ips_by_region(country_code, reg_code, **kargs):
-    return get_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and line[3] == reg_code,
-        **kargs
-    )
-
-
-def get_ips_by_asnum(asnum, **kargs):
-    return get_ips_by_data(
-        "GeoLite2-ASN.dump-IPv4.csv",
-        lambda line: line[2] == str(asnum),
-        **kargs
-    )
-
-
-def get_routable_ips(**kargs):
-    return get_ips_by_data(
-        'BGP.csv', lambda _: True, **kargs
-    )
-
-
-def count_ips_by_data(datafile, condition):
-    res = 0
-    for start, stop in _get_by_data(datafile, condition):
-        res += stop - start + 1
-    return res
-
-
-def count_ips_by_country(code):
-    return count_ips_by_data(
-        "GeoLite2-Country.dump-IPv4.csv",
-        lambda line: line[2] == code,
-    )
-
-
-def count_ips_by_location(locid):
-    return count_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[5] == str(locid),
-    )
-
-
-def count_ips_by_city(country_code, city):
-    return count_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and
-        line[4] == utils.encode_b64(
-            (city or "").encode('utf-8')
-        ).decode('utf-8'),
-    )
-
-
-def count_ips_by_region(country_code, reg_code):
-    return count_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and line[3] == reg_code,
-    )
-
-
-def count_ips_by_asnum(asnum):
-    return count_ips_by_data(
-        "GeoLite2-ASN.dump-IPv4.csv",
-        lambda line: line[2] == str(asnum),
-    )
-
-
-def count_routable_ips():
-    return count_ips_by_data(
-        'BGP.csv',
-        lambda _: True,
-    )
-
-
-def list_ips_by_data(datafile, condition,
-                     listall=True, listcidrs=False,
-                     skip=0, maxnbr=None, multiple=False):
-    if ((not listall) or listcidrs) and ((skip != 0) or (maxnbr is not None)):
-        utils.LOGGER.warning('Skip and maxnbr parameters have no effect '
-                             'when listall == False or listcidrs == True.')
-    if listcidrs:
-        listall = False
-    for start, stop in _get_by_data(datafile, condition):
-        if listall:
-            curaddrs = [utils.int2ip(addr) for addr in
-                        range(start, stop + 1)]
-            if skip > 0:
-                skip -= len(curaddrs)
-                if skip <= 0:
-                    curaddrs = curaddrs[skip:]
-                else:
-                    curaddrs = []
-            if maxnbr is not None:
-                maxnbr -= len(curaddrs)
-                if maxnbr < 0:
-                    curaddrs = curaddrs[:maxnbr]
-            for addr in curaddrs:
-                print(addr)
-            if maxnbr is not None and maxnbr <= 0:
-                return
-        elif listcidrs:
-            for net in utils.range2nets((start, stop)):
-                print(net)
-        else:
-            print("%s - %s" % (utils.int2ip(start),
-                               utils.int2ip(stop)))
-
-
-def list_ips_by_country(code, **kargs):
-    return list_ips_by_data(
-        "GeoLite2-Country.dump-IPv4.csv",
-        lambda line: line[2] == code,
-        **kargs
-    )
-
-
-def list_ips_by_location(locid, **kargs):
-    return list_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[5] == str(locid),
-        **kargs
-    )
-
-
-def list_ips_by_city(country_code, city, **kargs):
-    return list_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and
-        line[4] == utils.encode_b64(
-            (city or "").encode('utf-8')
-        ).decode('utf-8'),
-        **kargs
-    )
-
-
-def list_ips_by_region(country_code, reg_code, **kargs):
-    return list_ips_by_data(
-        'GeoLite2-City.dump-IPv4.csv',
-        lambda line: line[2] == country_code and line[3] == reg_code,
-        **kargs
-    )
-
-
-def list_ips_by_asnum(asnum, **kargs):
-    return list_ips_by_data(
-        "GeoLite2-ASN.dump-IPv4.csv",
-        lambda line: line[2] == str(asnum),
-        **kargs
-    )
-
-
-def list_routable_ips(**kargs):
-    return list_ips_by_data(
-        'BGP.csv', lambda _: True, **kargs
-    )

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -36,12 +36,10 @@ except ImportError:
     HAVE_MYSQL = False
 
 
-from future.utils import viewitems
-from past.builtins import basestring
+from bottle import request
 
 
 from ivre import config, utils
-from ivre.db import db
 
 
 def js_alert(ident, level, message):
@@ -151,7 +149,7 @@ def get_user():
     """Return the connected user.
 
     """
-    return os.getenv('REMOTE_USER')
+    return request.environ.get('REMOTE_USER')
 
 
 def get_anonymized_user():
@@ -176,6 +174,7 @@ def _parse_query(dbase, query):
         'full': lambda: dbase.flt_empty,
         'noaccess': dbase.searchnonexistent,
         'category': lambda cat: dbase.searchcategory(cat.split(',')),
+        'source': dbase.searchsource,
     }[query[0]](*query[1:])
 
 
@@ -184,18 +183,28 @@ def get_init_flt(dbase):
     privileges.
 
     """
-    init_queries = dict([key, _parse_query(dbase, value)]
-                        for key, value in viewitems(config.WEB_INIT_QUERIES))
+    init_queries = {key: _parse_query(dbase, value)
+                    for key, value in config.WEB_INIT_QUERIES.items()}
     user = get_user()
     if user in init_queries:
         return init_queries[user]
-    if isinstance(user, basestring) and '@' in user:
+    if isinstance(user, str) and '@' in user:
         realm = user[user.index('@'):]
         if realm in init_queries:
             return init_queries[realm]
     if config.WEB_PUBLIC_SRV:
         return dbase.searchcategory(["Shared", get_anonymized_user()])
     return _parse_query(dbase, config.WEB_DEFAULT_INIT_QUERY)
+
+
+def str2regexpnone(value):
+    """Just like str2regexp, but handle special '-' value, which means
+False.
+
+    """
+    if value == '-':
+        return False
+    return utils.str2regexp(value)
 
 
 def flt_from_query(dbase, query, base_flt=None):
@@ -299,27 +308,27 @@ def flt_from_query(dbase, query, base_flt=None):
                 port = int(port)
                 flt = dbase.flt_and(
                     flt,
-                    dbase.searchservice(utils.str2regexp(req), port=port))
+                    dbase.searchservice(str2regexpnone(req), port=port))
             else:
                 flt = dbase.flt_and(
                     flt,
-                    dbase.searchservice(utils.str2regexp(value)))
+                    dbase.searchservice(str2regexpnone(value)))
         elif not neg and param == "product" and ":" in value:
             product = value.split(':', 2)
             if len(product) == 2:
                 flt = dbase.flt_and(
                     flt,
                     dbase.searchproduct(
-                        utils.str2regexp(product[1]),
-                        service=utils.str2regexp(product[0])
+                        product=str2regexpnone(product[1]),
+                        service=str2regexpnone(product[0])
                     )
                 )
             else:
                 flt = dbase.flt_and(
                     flt,
                     dbase.searchproduct(
-                        utils.str2regexp(product[1]),
-                        service=utils.str2regexp(product[0]),
+                        product=str2regexpnone(product[1]),
+                        service=str2regexpnone(product[0]),
                         port=int(product[2])
                     )
                 )
@@ -329,18 +338,18 @@ def flt_from_query(dbase, query, base_flt=None):
                 flt = dbase.flt_and(
                     flt,
                     dbase.searchproduct(
-                        utils.str2regexp(product[1]),
-                        version=utils.str2regexp(product[2]),
-                        service=utils.str2regexp(product[0]),
+                        product=str2regexpnone(product[1]),
+                        version=str2regexpnone(product[2]),
+                        service=str2regexpnone(product[0]),
                     )
                 )
             else:
                 flt = dbase.flt_and(
                     flt,
                     dbase.searchproduct(
-                        utils.str2regexp(product[1]),
-                        version=utils.str2regexp(product[2]),
-                        service=utils.str2regexp(product[0]),
+                        product=str2regexpnone(product[1]),
+                        version=str2regexpnone(product[2]),
+                        service=str2regexpnone(product[0]),
                         port=int(product[3])
                     )
                 )
@@ -438,16 +447,49 @@ def flt_from_query(dbase, query, base_flt=None):
                 ))
             else:
                 add_unused(neg, param, value)
+        elif not neg and param == 'cert':
+            flt = dbase.flt_and(flt, dbase.searchcert())
+        elif param.startswith('cert.'):
+            subfield = param.split('.', 1)[1]
+            if subfield == 'self_signed' and value is None:
+                flt = dbase.flt_and(flt, dbase.searchcert(self_signed=not neg))
+            elif not neg:
+                if subfield in ['md5', 'sha1', 'sha256', 'subject', 'issuer']:
+                    flt = dbase.flt_and(flt, dbase.searchcert(**{
+                        subfield: utils.str2regexp(value),
+                    }))
+                elif subfield in ['pubkey.md5', 'pubkey.sha1',
+                                  'pubkey.sha256']:
+                    flt = dbase.flt_and(flt, dbase.searchcert(**{
+                        'pk%s' % subfield[7:]: utils.str2regexp(value),
+                    }))
+                else:
+                    add_unused(neg, param, value)
+            else:
+                add_unused(neg, param, value)
         elif not neg and param == 'httphdr':
             if value is None:
                 flt = dbase.flt_and(flt, dbase.searchhttphdr())
             elif ':' in value:
-                name, value = (utils.str2regexp(string) for
-                               string in value.split(':', 1))
+                name, value = value.split(':', 1)
+                name = utils.str2regexp(name.lower())
+                value = utils.str2regexp(value)
                 flt = dbase.flt_and(flt, dbase.searchhttphdr(name=name,
                                                              value=value))
             else:
                 flt = dbase.flt_and(flt, dbase.searchhttphdr(
+                    name=utils.str2regexp(value.lower())
+                ))
+        elif not neg and param == 'httpapp':
+            if value is None:
+                flt = dbase.flt_and(flt, dbase.searchhttpapp())
+            elif ':' in value:
+                name, version = (utils.str2regexp(string) for
+                                 string in value.split(':', 1))
+                flt = dbase.flt_and(flt, dbase.searchhttpapp(name=name,
+                                                             version=version))
+            else:
+                flt = dbase.flt_and(flt, dbase.searchhttpapp(
                     name=utils.str2regexp(value)
                 ))
         elif not neg and param == 'owa':
@@ -525,12 +567,10 @@ def flt_from_query(dbase, query, base_flt=None):
         elif param == 'hop':
             if ':' in value:
                 hop, ttl = value.split(':', 1)
-                flt = dbase.flt_and(flt,
-                                    dbase.searchhop(hop, ttl=int(ttl),
-                                                    neg=neg))
+                flt = dbase.flt_and(flt, dbase.searchhop(hop, ttl=int(ttl),
+                                                         neg=neg))
             else:
-                flt = dbase.flt_and(flt,
-                                    db.view.searchhop(value, neg=neg))
+                flt = dbase.flt_and(flt, dbase.searchhop(value, neg=neg))
         elif param == 'hopname':
             flt = dbase.flt_and(flt,
                                 dbase.searchhopname(value, neg=neg))
@@ -571,9 +611,9 @@ def flt_from_query(dbase, query, base_flt=None):
                 if '/' in port:
                     proto, port = port.split('/')
                 else:
-                    proto, port = "tcp", port
+                    proto = "tcp"
                 protos.setdefault(proto, []).append(int(port))
-            for proto, ports in viewitems(protos):
+            for proto, ports in protos.items():
                 flt = dbase.flt_and(
                     flt,
                     dbase.searchport(ports[0], protocol=proto, state=param)
@@ -645,6 +685,16 @@ def flt_from_query(dbase, query, base_flt=None):
                                                           neg=neg))
             elif param == "openport":
                 flt = dbase.flt_and(flt, dbase.searchopenport(neg=neg))
+            elif param == "ipv4":
+                if neg:
+                    flt = dbase.flt_and(flt, dbase.searchipv6())
+                else:
+                    flt = dbase.flt_and(flt, dbase.searchipv4())
+            elif param == "ipv6":
+                if neg:
+                    flt = dbase.flt_and(flt, dbase.searchipv4())
+                else:
+                    flt = dbase.flt_and(flt, dbase.searchipv6())
             elif param.isdigit():
                 flt = dbase.flt_and(flt, dbase.searchport(int(param),
                                                           neg=neg))

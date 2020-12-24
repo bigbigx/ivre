@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -17,17 +17,34 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-"""
-This module is part of IVRE.
-Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
-
-This sub-module contains functions used for flow.
-"""
+"""This sub-module contains functions used for flow."""
 
 import re
-from ivre import utils
+
+from ivre import utils, config
 
 SCHEMA_VERSION = 1
+
+FIELDS = {
+    'src.addr': "Source IP Address",
+    'dst.addr': "Destination IP Address",
+    'proto': "Transport protocol",
+    'dport': "Destination port (if relevant)",
+    'sports': "Source ports (list) (if relevant)",
+    'type': "ICMP type (if relevant)",
+    'codes': "ICMP codes (list) (if relevant)",
+    'count': "Number of occurrences of the flow",
+    'csbytes': "Number of bytes sent by client (src) to server (dst)",
+    'scbytes': "Number of bytes sent by server (dst) to client (src)",
+    'cspkts': "Number of packets sent by client (src) to server (dst)",
+    'scpkts': "Number of packets sent by server (dst) to client (src)",
+    'firstseen': "First time the flow has been observed",
+    'lastseen': "Last time the flow has been observed",
+    'times': "Time periods during which the flow has been observed (list) "
+             "(MongoDB backend only)",
+    'times.duration': "Time period duration (MongoDB backend only)",
+    'times.start': "Time period beginning (MongoDB backend only)",
+}
 
 HTTP_PASSIVE_RECONTYPES_SERVER = {
     'HTTP_CLIENT_HEADER_SERVER': {
@@ -59,6 +76,10 @@ META_DESC_ARRAYS = ["dns.keys.answers"]
 # If its associated value is a list, each internal field name equals its
 # corresponding parsed Zeek file field name.
 META_DESC = {
+    "arp": {
+        "keys": ["op", "mac_src", "mac_dst"],
+    },
+
     "dns": {
         "keys": {"query": None, "class": "{qclass_name}",
                  "type": "{qtype_name}", "rcode": "{rcode_name}",
@@ -108,8 +129,49 @@ META_DESC = {
     },
 }
 
+# Stores available fields
+# Populated by validate_field
+_ALL_FIELDS = None
 
-class Query(object):
+
+def validate_field(field):
+    """
+    Validates whether the given field is valid.
+    If the field does not exist, it raises a ValueError exception.
+    If the field is disabled, it logs a warning.
+    Return value is unused.
+    """
+    if _ALL_FIELDS is None:
+        _compute_available_fields()
+    if field not in _ALL_FIELDS:
+        raise ValueError("%s is not a valid field. Use --fields to get "
+                         "the list of available fields." % field)
+    if not _ALL_FIELDS[field]:
+        utils.LOGGER.warning("%s might not work because you configured IVRE "
+                             "to not store flows metadata.", field)
+
+
+def _compute_available_fields():
+    """
+    Computes available fields from FIELDS and META_DESC and stores them in
+    _ALL_FIELDS. It is a dictionary where keys are fields and values
+    are booleans. The boolean represents whether the field is
+    usable or not (useful for meta fields that can be disabled).
+    """
+    global _ALL_FIELDS
+    _ALL_FIELDS = {}
+    for field in FIELDS:
+        _ALL_FIELDS[field] = True
+    meta_enabled = config.FLOW_STORE_METADATA
+    for meta in META_DESC:
+        _ALL_FIELDS["meta.%s" % meta] = meta_enabled
+        for name in META_DESC[meta]["keys"]:
+            _ALL_FIELDS["meta.%s.%s" % (meta, name)] = meta_enabled
+        for name in META_DESC[meta].get('counters', []):
+            _ALL_FIELDS["meta.%s.%s" % (meta, name)] = meta_enabled
+
+
+class Query:
     # The order matters because regex pipe is ungreedy
     operators_chars = [':', '==', '=~', '=', '!=', '<=', '<', '>=', '>']
     operators_re = re.compile('|'.join(re.escape(x) for x in operators_chars))
@@ -167,6 +229,10 @@ class Query(object):
             clause['attr'], value = [
                 elt.strip() for elt in flt.split(clause['operator'], 1)]
             clause['value'] = utils.str2pyval(value)
+        # Validate field
+        # 'addr' is a shortcut for src.addr OR dst.addr
+        if clause['attr'] != 'addr':
+            validate_field(clause['attr'])
         return clause
 
     def add_clause_from_filter(self, flt, mode="node"):

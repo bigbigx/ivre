@@ -1,5 +1,5 @@
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -14,23 +14,28 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-FROM debian:jessie
-LABEL maintainer="Pierre LALET <pierre.lalet@cea.fr>"
+FROM debian:buster
+LABEL maintainer="Pierre LALET <pierre@droids-corp.org>"
 
 ENV DEBIAN_FRONTEND noninteractive
 
 # MongoDB
-# http://docs.mongodb.org/manual/tutorial/install-mongodb-on-debian/
-RUN apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 68818C72E52529D4
-RUN echo "deb http://repo.mongodb.org/apt/debian jessie/mongodb-org/4.0 main" | tee /etc/apt/sources.list.d/mongodb-org-4.0.list
-RUN apt-get -q update && apt-get -qy install mongodb-org
+# https://docs.mongodb.com/manual/tutorial/install-mongodb-on-debian/
+RUN apt-get -q update && \
+    apt-get -qy --no-install-recommends install gnupg wget ca-certificates && \
+    wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | apt-key add - && \
+    echo "deb http://repo.mongodb.org/apt/debian buster/mongodb-org/4.4 main" > /etc/apt/sources.list.d/mongodb-org-4.4.list && \
+    ln -s /bin/true /usr/bin/systemctl && \
+    apt-get -q update && apt-get -qy --no-install-recommends install mongodb-org && \
+    apt-get -qy --purge autoremove gnupg wget ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Data & log directories
 VOLUME /var/lib/mongodb
 VOLUME /var/log/mongodb
 
 # Accept remote connections to DBs
-RUN sed -i 's/^  bindIp:/#bindIp:/' /etc/mongod.conf
+RUN sed -i 's/^  bindIp:.*/  bindIp: 0.0.0.0/' /etc/mongod.conf
 
 # MongoDB instance
 EXPOSE 27017

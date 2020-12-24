@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -17,19 +17,21 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-"""This sub-module contains functions to interact with the
-database backends.
+"""This sub-module contains functions to interact with the database
+backends.
+
 """
 
-try:
-    from collections import OrderedDict
-except ImportError:
-    # fallback to dict for Python 2.6
-    OrderedDict = dict
+from argparse import ArgumentParser
+from collections import OrderedDict
+from datetime import datetime, timedelta
 from functools import reduce
+from importlib import import_module
 import json
 import os
 import pickle
+import pipes
+import random
 import re
 import shutil
 import socket
@@ -37,16 +39,11 @@ import struct
 import subprocess
 import sys
 import tempfile
-try:
-    from urllib.parse import urlparse
-except ImportError:
-    from urlparse import urlparse
+from urllib.parse import urlparse
 import uuid
 import xml.sax
 
 
-from builtins import range
-from future.utils import viewitems, viewvalues
 # tests: I don't want to depend on cluster for now
 try:
     import cluster
@@ -56,10 +53,12 @@ except ImportError:
 
 
 from ivre import config, geoiputils, nmapout, utils, xmlnmap, flow
-from datetime import datetime, timedelta
+from ivre.active.data import ALIASES_TABLE_ELEMS, merge_host_docs, \
+    set_openports_attribute
+from ivre.zgrabout import ZGRAB_PARSERS
 
 
-class DB(object):
+class DB:
     """The base database object. Must remain backend-independent and
     purpose-independent.
 
@@ -81,9 +80,12 @@ class DB(object):
 
     """
     globaldb = None
+    ipaddr_fields = []
+    datetime_fields = []
+    list_fields = []
 
     def __init__(self):
-        self.argparser = utils.ArgparserParent()
+        self.argparser = ArgumentParser(add_help=False)
         self.argparser.add_argument(
             '--country', metavar='CODE',
             help='show only results from this country'
@@ -97,6 +99,14 @@ class DB(object):
         self.argparser.add_argument('--svchostname', metavar='HOSTNAME')
         self.argparser.add_argument('--useragent', metavar='USER-AGENT',
                                     nargs='?', const=False)
+        self.argparser.add_argument('--host', metavar='IP')
+        self.argparser.add_argument('--range', metavar='IP', nargs=2)
+        self.argparser.add_argument('--net', metavar='IP/MASK')
+        self.argparser.add_argument('--ipv4', action='store_true')
+        self.argparser.add_argument('--ipv6', action='store_true')
+        self.argparser.add_argument('ips', nargs='*',
+                                    help='Display results for specified IP '
+                                    'addresses or ranges.')
 
     def parse_args(self, args, flt=None):
         if flt is None:
@@ -145,6 +155,37 @@ class DB(object):
                         useragent=utils.str2regexp(args.useragent)
                     ),
                 )
+        if args.host is not None:
+            flt = self.flt_and(flt, self.searchhost(args.host))
+        if args.net is not None:
+            flt = self.flt_and(flt, self.searchnet(args.net))
+        if args.range is not None:
+            flt = self.flt_and(flt, self.searchrange(*args.range))
+        if args.ipv4:
+            flt = self.flt_and(flt, self.searchipv4())
+        if args.ipv6:
+            flt = self.flt_and(flt, self.searchipv6())
+        if args.ips:
+            def _updtflt_(oflt, nflt):
+                if not oflt:
+                    return nflt
+                return self.flt_or(oflt, nflt)
+            loc_flt = None
+            for a in args.ips:
+                if '-' in a:
+                    a = a.split('-', 1)
+                    if a[0].isdigit():
+                        a[0] = int(a[0])
+                    if a[1].isdigit():
+                        a[1] = int(a[1])
+                    loc_flt = _updtflt_(loc_flt, self.searchrange(a[0], a[1]))
+                elif '/' in a:
+                    loc_flt = _updtflt_(loc_flt, self.searchnet(a))
+                else:
+                    if a.isdigit():
+                        a = self.ip2internal(int(a))
+                    loc_flt = _updtflt_(loc_flt, self.searchhost(a))
+            flt = self.flt_and(flt, loc_flt)
         return flt
 
     @staticmethod
@@ -163,7 +204,9 @@ class DB(object):
         conditions is true.
 
         """
-        return reduce(cls._flt_and, args)
+        if args:
+            return reduce(cls._flt_and, args)
+        return cls.flt_empty
 
     @staticmethod
     def _flt_and(cond1, cond2):
@@ -182,7 +225,9 @@ class DB(object):
         conditions is true.
 
         """
-        return reduce(cls._flt_or, args)
+        if args:
+            return reduce(cls._flt_or, args)
+        return cls.flt_empty
 
     @staticmethod
     def _flt_or(cond1, cond2):
@@ -249,12 +294,8 @@ See .features_addr_list() for the number and meaning of the features.
             return result + [utils.ip2int(addr)]
         addrbin = utils.ip2bin(addr)
         if use_ipv6:
-            return result + [
-                ord(addrbin[i:i + 1]) for i in range(len(addrbin))
-            ]
-        return result + [
-            ord(addrbin[i:i + 1]) for i in range(len(addrbin))
-        ][-4:]
+            return result + list(addrbin)
+        return result + list(addrbin)[-4:]
 
     def features_port_list(self, flt, yieldall, use_service, use_product,
                            use_version):
@@ -275,25 +316,14 @@ If `yieldall` is true, when a specific feature exists (e.g., `(80,
 
         """
         if not yieldall:
-            # when `yieldall` is false, the sort operation is done in
-            # database, unless we are using MongoDB < 3.2
-            try:
-                supports_sort = self.mongodb_32_more
-            except AttributeError:
-                supports_sort = True
-            if supports_sort:
-                return list(
-                    tuple(val) for val in
-                    self._features_port_list(flt, yieldall, use_service,
-                                             use_product, use_version)
-                )
-            return sorted(set(
+            return list(
                 tuple(val) for val in
                 self._features_port_list(flt, yieldall, use_service,
                                          use_product, use_version)
-            ), key=lambda val: [utils.key_sort_none(v) for v in val])
+            )
 
         def _gen(val):
+            val = list(val)
             yield tuple(val)
             for i in range(-1, -len(val), -1):
                 val[i] = None
@@ -408,26 +438,25 @@ To use this to create a pandas DataFrame, you can run:
                     )
                 )
             )
-        else:
-            return (
-                headers,
-                (
-                    self.features_addr_get(
-                        addr,
-                        use_asnum,
-                        use_ipv6,
-                        use_single_int
-                    ) + features
-                    for addr, features in self.features_port_get(
-                        features_port,
-                        flt,
-                        yieldall,
-                        use_service,
-                        use_product,
-                        use_version,
-                    )
+        return (
+            headers,
+            (
+                self.features_addr_get(
+                    addr,
+                    use_asnum,
+                    use_ipv6,
+                    use_single_int
+                ) + features
+                for addr, features in self.features_port_get(
+                    features_port,
+                    flt,
+                    yieldall,
+                    use_service,
+                    use_product,
+                    use_version,
                 )
             )
+        )
 
     @staticmethod
     def searchversion(version):
@@ -448,6 +477,10 @@ To use this to create a pandas DataFrame, you can run:
         range given its boundaries `start` and `stop`.
 
         """
+        raise NotImplementedError
+
+    @staticmethod
+    def searchhost(addr, neg=False):
         raise NotImplementedError
 
     @classmethod
@@ -543,6 +576,40 @@ To use this to create a pandas DataFrame, you can run:
         """
         raise NotImplementedError
 
+    @classmethod
+    def searchtorcert(cls):
+        expr = re.compile(
+            '^commonName=www\\.[a-z2-7]{8,20}\\.(net|com)$',
+            flags=0
+        )
+        return cls.searchcert(
+            subject=expr,
+            issuer=expr,
+        )
+
+    @classmethod
+    def searchcertsubject(cls, expr, issuer=None):
+        utils.LOGGER.info(
+            'The API .searchcertsubject() is deprecated and will be removed. '
+            'Use .searchcert() instead.'
+        )
+        return cls.searchcert(subject=expr, issuer=issuer)
+
+    @classmethod
+    def searchcertissuer(cls, expr):
+        utils.LOGGER.info(
+            'The API .searchcertissuer() is deprecated and will be removed. '
+            'Use .searchcert() instead.'
+        )
+        return cls.searchcert(issuer=expr)
+
+    @classmethod
+    def searchcert(cls, keytype=None, md5=None, sha1=None, sha256=None,
+                   subject=None, issuer=None, self_signed=None,
+                   pkmd5=None, pksha1=None, pksha256=None, cacert=False):
+        """Look for a particular certificate"""
+        raise NotImplementedError
+
     @staticmethod
     def _ja3keyvalue(value_or_hash):
         """Returns the key and the value to search for according
@@ -579,8 +646,8 @@ To use this to create a pandas DataFrame, you can run:
             """Returns a cluster
             """
             return cluster.HierarchicalClustering(
-                [rec for rec in values],
-                lambda x, y: abs(x['mean'] - y['mean'])
+                list(values),
+                lambda x, y: abs(x['mean'] - y['mean']),
             )
 
     @staticmethod
@@ -593,6 +660,58 @@ To use this to create a pandas DataFrame, you can run:
 
 
 class DBActive(DB):
+
+    ipaddr_fields = ["addr", "traces.hops.ipaddr", "ports.state_reason_ip"]
+    datetime_fields = ["starttime", "endtime"]
+    list_fields = [
+        "categories",
+        "cpes",
+        "openports.udp.ports",
+        "openports.tcp.ports",
+        "os.osclass",
+        "os.osmatch",
+        "ports",
+        "ports.screenwords",
+        "ports.scripts",
+        "ports.scripts.dns-zone-transfer",
+        "ports.scripts.dns-zone-transfer.records",
+        "ports.scripts.fcrdns",
+        "ports.scripts.fcrdns.addresses",
+        "ports.scripts.http-app",
+        "ports.scripts.http-headers",
+        "ports.scripts.http-server-header",
+        "ports.scripts.http-user-agent",
+        "ports.scripts.ike-info.transforms",
+        "ports.scripts.ike-info.vendor_ids",
+        "ports.scripts.ls.volumes",
+        "ports.scripts.ls.volumes.files",
+        "ports.scripts.ms-sql-info",
+        "ports.scripts.mongodb-databases.databases",
+        "ports.scripts.mongodb-databases.databases.shards",
+        "ports.scripts.rpcinfo",
+        "ports.scripts.rpcinfo.version",
+        "ports.scripts.scanner.ports.tcp.ports",
+        "ports.scripts.scanner.ports.udp.ports",
+        "ports.scripts.scanner.scanners",
+        "ports.scripts.scanner.scanners.probes",
+        "ports.scripts.scanner.probes",
+        "ports.scripts.smb-enum-shares.shares",
+        "ports.scripts.ssh-hostkey",
+        "ports.scripts.ssl-cert",
+        "ports.scripts.ssl-ja3-client",
+        "ports.scripts.ssl-ja3-server",
+        "ports.scripts.vulns",
+        "ports.scripts.vulns.check_results",
+        "ports.scripts.vulns.description",
+        "ports.scripts.vulns.extra_info",
+        "ports.scripts.vulns.ids",
+        "ports.scripts.vulns.refs",
+        "traces",
+        "traces.hops",
+        "hostnames",
+        "hostnames.domains",
+    ]
+
     def __init__(self):
         super(DBActive, self).__init__()
         self._schema_migrations = {
@@ -609,6 +728,12 @@ class DBActive(DB):
                 9: (10, self.__migrate_schema_hosts_9_10),
                 10: (11, self.__migrate_schema_hosts_10_11),
                 11: (12, self.__migrate_schema_hosts_11_12),
+                12: (13, self.__migrate_schema_hosts_12_13),
+                13: (14, self.__migrate_schema_hosts_13_14),
+                14: (15, self.__migrate_schema_hosts_14_15),
+                15: (16, self.__migrate_schema_hosts_15_16),
+                16: (17, self.__migrate_schema_hosts_16_17),
+                17: (18, self.__migrate_schema_hosts_17_18),
             },
         }
         self.argparser.add_argument(
@@ -623,23 +748,14 @@ class DBActive(DB):
                                     help='show only results from this source')
         self.argparser.add_argument('--version', metavar="VERSION", type=int)
         self.argparser.add_argument('--timeago', metavar='SECONDS', type=int)
-        if utils.USE_ARGPARSE:
-            self.argparser.add_argument('--id', metavar='ID', help='show only '
-                                        'results with this(those) ID(s)',
-                                        nargs='+')
-            self.argparser.add_argument('--no-id', metavar='ID', help='show '
-                                        'only results WITHOUT this(those) '
-                                        'ID(s)', nargs='+')
-        else:
-            self.argparser.add_argument('--id', metavar='ID', help='show only '
-                                        'results with this ID')
-            self.argparser.add_argument('--no-id', metavar='ID', help='show '
-                                        'only results WITHOUT this ID')
-        self.argparser.add_argument('--host', metavar='IP')
+        self.argparser.add_argument('--id', metavar='ID', help='show only '
+                                    'results with this(those) ID(s)',
+                                    nargs='+')
+        self.argparser.add_argument('--no-id', metavar='ID', help='show '
+                                    'only results WITHOUT this(those) '
+                                    'ID(s)', nargs='+')
         self.argparser.add_argument('--hostname', metavar='NAME / ~NAME')
         self.argparser.add_argument('--domain', metavar='NAME / ~NAME')
-        self.argparser.add_argument('--net', metavar='IP/MASK')
-        self.argparser.add_argument('--range', metavar='IP', nargs=2)
         self.argparser.add_argument('--hop', metavar='IP')
         self.argparser.add_argument('--not-port', metavar='PORT')
         self.argparser.add_argument('--openport', action='store_true')
@@ -664,6 +780,7 @@ class DBActive(DB):
         self.argparser.add_argument('--x11', action='store_true')
         self.argparser.add_argument('--xp445', action='store_true')
         self.argparser.add_argument('--httphdr')
+        self.argparser.add_argument('--httpapp')
         self.argparser.add_argument('--owa', action='store_true')
         self.argparser.add_argument('--vuln-boa', '--vuln-intersil',
                                     action='store_true')
@@ -679,14 +796,12 @@ class DBActive(DB):
 insert structures.
 
         """
-        pass
 
     def stop_store_hosts(self):
         """Backend-specific subclasses may use this method to commit bulk
 insert structures.
 
         """
-        pass
 
     @staticmethod
     def getscreenshot(port):
@@ -696,12 +811,12 @@ insert structures.
             return None
         if url == "field":
             return port.get('screendata')
+        return None
 
     def migrate_schema(self, version):
         """Implemented in backend-specific classes.
 
         """
-        pass
 
     @classmethod
     def __migrate_schema_hosts_0_1(cls, doc):
@@ -805,8 +920,7 @@ insert structures.
         for port in doc.get('ports', []):
             if port['port'] == 'host':
                 port['port'] = -1
-        for state, (total, counts) in list(viewitems(doc.get('extraports',
-                                                             {}))):
+        for state, (total, counts) in list(doc.get('extraports', {}).items()):
             doc['extraports'][state] = {"total": total, "reasons": counts}
 
     @staticmethod
@@ -818,7 +932,7 @@ insert structures.
         assert doc["schema_version"] == 5
         doc["schema_version"] = 6
         migrate_scripts = set(script for script, alias
-                              in viewitems(xmlnmap.ALIASES_TABLE_ELEMS)
+                              in ALIASES_TABLE_ELEMS.items()
                               if alias == 'vulns')
         for port in doc.get('ports', []):
             for script in port.get('scripts', []):
@@ -868,7 +982,7 @@ insert structures.
                     else:
                         script['vulns'] = [dict(tab, id=vulnid)
                                            for vulnid, tab in
-                                           viewitems(script['vulns'])]
+                                           script['vulns'].items()]
 
     @staticmethod
     def __migrate_schema_hosts_8_9(doc):
@@ -936,26 +1050,24 @@ they are stored as canonical string representations.
                             script['ssl-cert']['pem'].splitlines()[1:-1]
                         ).encode()
                         try:
-                            newout, newinfo = xmlnmap.create_ssl_cert(data)
+                            (
+                                script['output'],
+                                script['ssl-cert'],
+                            ) = xmlnmap.create_ssl_cert(data)
                         except Exception:
                             utils.LOGGER.warning('Cannot parse certificate %r',
                                                  data,
                                                  exc_info=True)
                         else:
-                            script['output'] = '\n'.join(newout)
-                            script['ssl-cert'] = newinfo
                             continue
                     try:
-                        pubkeytype = {
-                            'rsaEncryption': 'rsa',
-                            'id-ecPublicKey': 'ec',
-                            'id-dsa': 'dsa',
-                            'dhpublicnumber': 'dh',
-                        }[script['ssl-cert'].pop('pubkeyalgo')]
+                        algo = script['ssl-cert'].pop('pubkeyalgo')
                     except KeyError:
                         pass
                     else:
-                        script['pubkey'] = {'type': pubkeytype}
+                        script['pubkey'] = {
+                            'type': utils.PUBKEY_TYPES.get(algo, algo),
+                        }
         for trace in doc.get('traces', []):
             for hop in trace.get('hops', []):
                 if 'ipaddr' in hop:
@@ -988,14 +1100,174 @@ the structured output for fcrdns and rpcinfo script.
         return doc
 
     @staticmethod
+    def __migrate_schema_hosts_12_13(doc):
+        """Converts a record from version 12 to version 13. Version 13 changes
+the structured output for ms-sql-info and smb-enum-shares scripts.
+
+        """
+        assert doc["schema_version"] == 12
+        doc["schema_version"] = 13
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if script['id'] == "ms-sql-info":
+                    if "ms-sql-info" in script:
+                        script[
+                            "ms-sql-info"
+                        ] = xmlnmap.change_ms_sql_info(
+                            script["ms-sql-info"]
+                        )
+                elif script['id'] == "smb-enum-shares":
+                    if "smb-enum-shares" in script:
+                        script[
+                            "smb-enum-shares"
+                        ] = xmlnmap.change_smb_enum_shares(
+                            script["smb-enum-shares"]
+                        )
+        return doc
+
+    @staticmethod
+    def __migrate_schema_hosts_13_14(doc):
+        """Converts a record from version 13 to version 14. Version 14 changes
+the structured output for ssh-hostkey and ls scripts to prevent a same
+field from having different data types.
+
+        """
+        assert doc["schema_version"] == 13
+        doc["schema_version"] = 14
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if script['id'] == "ssh-hostkey" and 'ssh-hostkey' in script:
+                    script['ssh-hostkey'] = xmlnmap.change_ssh_hostkey(
+                        script["ssh-hostkey"]
+                    )
+                elif (ALIASES_TABLE_ELEMS.get(script['id']) == 'ls' and
+                      "ls" in script):
+                    script[
+                        "ls"
+                    ] = xmlnmap.change_ls_migrate(
+                        script["ls"]
+                    )
+        return doc
+
+    @staticmethod
+    def __migrate_schema_hosts_14_15(doc):
+        """Converts a record from version 14 to version 15. Version 15 changes
+the structured output for httpègit script to move data to values
+instead of keys.
+
+        """
+        assert doc["schema_version"] == 14
+        doc["schema_version"] = 15
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if script['id'] == "http-git" and 'http-git' in script:
+                    script['http-git'] = xmlnmap.change_http_git(
+                        script["http-git"]
+                    )
+        return doc
+
+    @staticmethod
+    def __migrate_schema_hosts_15_16(doc):
+        """Converts a record from version 15 to version 16. Version 16 uses a
+consistent structured output for Nmap http-server-header script (old
+versions reported `{"Server": "value"}`, while recent versions report
+`["value"]`).
+
+        """
+        assert doc["schema_version"] == 15
+        doc["schema_version"] = 16
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if script['id'] == "http-server-header":
+                    if 'http-server-header' in script:
+                        data = script['http-server-header']
+                        if isinstance(data, dict):
+                            if 'Server' in data:
+                                script['http-server-header'] = [data['Server']]
+                            else:
+                                script['http-server-header'] = []
+                    else:
+                        script['http-server-header'] = [
+                            line.split(':', 1)[1].lstrip() for line in (
+                                line.strip()
+                                for line in script['output'].splitlines()
+                            ) if line.startswith('Server:')
+                        ]
+
+    @staticmethod
+    def __migrate_schema_hosts_16_17(doc):
+        """Converts a record from version 16 to version 17. Version 17 uses a
+list for ssl-cert output, since several certificates may exist on a
+single port.
+
+The parsing has been improved and more data gets stored, so while we
+do this, we use the opportunity to parse the certificate again.
+
+        """
+        assert doc["schema_version"] == 16
+        doc["schema_version"] = 17
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if script['id'] == "ssl-cert" and 'ssl-cert' in script:
+                    data = script['ssl-cert']
+                    out = script['output']
+                    if 'pem' in data:
+                        rawdata = ''.join(
+                            data['pem'].splitlines()[1:-1]
+                        )
+                        try:
+                            out, data = xmlnmap.create_ssl_cert(
+                                rawdata.encode()
+                            )
+                        except Exception:
+                            utils.LOGGER.warning(
+                                'Cannot parse certificate data [%r]',
+                                rawdata,
+                                exc_info=True,
+                            )
+                            data = [data]
+                    script['ssl-cert'] = data
+                    script['output'] = out
+
+    @staticmethod
+    def __migrate_schema_hosts_17_18(doc):
+        """Converts a record from version 17 to version 18. Version 18
+introduces HASSH (SSH fingerprint) in ssh2-enum-algos.
+
+        """
+        assert doc["schema_version"] == 17
+        doc["schema_version"] = 18
+        for port in doc.get('ports', []):
+            for script in port.get('scripts', []):
+                if (
+                        script['id'] == "ssh2-enum-algos" and
+                        'ssh2-enum-algos' in script
+                ):
+                    (
+                        script['output'],
+                        script['ssh2-enum-algos']
+                    ) = xmlnmap.change_ssh2_enum_algos(
+                        script['output'],
+                        script['ssh2-enum-algos']
+                    )
+        return doc
+
+    @staticmethod
     def json2dbrec(host):
         return host
 
     def store_scan_doc(self, scan):
         pass
 
+    def update_scan_doc(self, scan_id, data):
+        pass
+
     def remove(self, host):
         raise NotImplementedError
+
+    def remove_many(self, flt):
+        for rec in self.get(flt):
+            self.remove(rec)
 
     def get_mean_open_ports(self, flt):
         """This method returns for a specific query `flt` a list of
@@ -1031,6 +1303,71 @@ the structured output for fcrdns and rpcinfo script.
         #             ports += port['port']
         #     result.append((self.getid(host), count * ports))
         # return result
+
+    def _features_port_get(self, features, flt, yieldall, use_service,
+                           use_product, use_version):
+        if use_version:
+            def _extract(rec):
+                for port in rec.get('ports', []):
+                    if port['port'] == -1:
+                        continue
+                    yield (port['port'], port.get('service_name'),
+                           port.get('service_product'),
+                           port.get('service_version'))
+                    if not yieldall:
+                        continue
+                    if port.get('service_version') is not None:
+                        yield (port['port'], port.get('service_name'),
+                               port.get('service_product'), None)
+                    else:
+                        continue
+                    if port.get('service_product') is not None:
+                        yield (port['port'], port.get('service_name'), None,
+                               None)
+                    else:
+                        continue
+                    if port.get('service_name') is not None:
+                        yield (port['port'], None, None, None)
+        elif use_product:
+            def _extract(rec):
+                for port in rec.get('ports', []):
+                    if port['port'] == -1:
+                        continue
+                    yield (port['port'], port.get('service_name'),
+                           port.get('service_product'))
+                    if not yieldall:
+                        continue
+                    if port.get('service_product') is not None:
+                        yield (port['port'], port.get('service_name'), None)
+                    else:
+                        continue
+                    if port.get('service_name') is not None:
+                        yield (port['port'], None, None)
+        elif use_service:
+            def _extract(rec):
+                for port in rec.get('ports', []):
+                    if port['port'] == -1:
+                        continue
+                    yield (port['port'], port.get('service_name'))
+                    if not yieldall:
+                        continue
+                    if port.get('service_name') is not None:
+                        yield (port['port'], None)
+        else:
+            def _extract(rec):
+                for port in rec.get('ports', []):
+                    if port['port'] == -1:
+                        continue
+                    yield (port['port'], )
+        n_features = len(features)
+        for rec in self.get(flt):
+            currec = [0] * n_features
+            for feat in _extract(rec):
+                try:
+                    currec[features[feat]] = 1
+                except KeyError:
+                    pass
+            yield (rec['addr'], currec)
 
     def searchsshkey(self, fingerprint=None, key=None,
                      keytype=None, bits=None, output=None):
@@ -1125,15 +1462,33 @@ the structured output for fcrdns and rpcinfo script.
         return self.searchscript(name='rpcinfo',
                                  output=re.compile('nfs', flags=0))
 
-    def searchtorcert(self):
-        expr = re.compile(
-            '^commonName=www\\.[a-z2-7]{8,20}\\.(net|com)$',
-            flags=0
-        )
-        return self.searchscript(
-            name='ssl-cert',
-            values={'subject_text': expr, 'issuer_text': expr},
-        )
+    @classmethod
+    def searchcert(cls, keytype=None, md5=None, sha1=None, sha256=None,
+                   subject=None, issuer=None, self_signed=None,
+                   pkmd5=None, pksha1=None, pksha256=None, cacert=False):
+        values = {}
+        if keytype is not None:
+            values['pubkey.type'] = keytype
+        if md5 is not None:
+            values['md5'] = md5
+        if sha1 is not None:
+            values['sha1'] = sha1
+        if sha256 is not None:
+            values['sha256'] = sha256
+        if subject is not None:
+            values['subject_text'] = subject
+        if issuer is not None:
+            values['issuer_text'] = issuer
+        if self_signed is not None:
+            values['self_signed'] = self_signed
+        if pkmd5 is not None:
+            values['pubkey.md5'] = pkmd5
+        if pksha1 is not None:
+            values['pubkey.sha1'] = pksha1
+        if pksha256 is not None:
+            values['pubkey.sha256'] = pksha256
+        return cls.searchscript(name="ssl-cacert" if cacert else "ssl-cert",
+                                values=values)
 
     @classmethod
     def searchhttphdr(cls, name=None, value=None):
@@ -1147,8 +1502,22 @@ the structured output for fcrdns and rpcinfo script.
         return cls.searchscript(name="http-headers",
                                 values={"name": name, "value": value})
 
+    @classmethod
+    def searchhttpapp(cls, name=None, version=None):
+        if name is None and version is None:
+            return cls.searchscript(name="http-app")
+        if version is None:
+            return cls.searchscript(name="http-app",
+                                    values={"application": name})
+        if name is None:
+            return cls.searchscript(name="http-app",
+                                    values={"version": version})
+        return cls.searchscript(name="http-app",
+                                values={"application": name,
+                                        "version": version})
+
     def searchgeovision(self):
-        return self.searchproduct(re.compile('^GeoVision', re.I))
+        return self.searchproduct(product=re.compile('^GeoVision', re.I))
 
     def searchwebcam(self):
         return self.searchdevicetype('webcam')
@@ -1170,7 +1539,7 @@ the structured output for fcrdns and rpcinfo script.
         raise NotImplementedError
 
     @staticmethod
-    def searchproduct(product, version=None, service=None, port=None,
+    def searchproduct(product=None, version=None, service=None, port=None,
                       protocol=None):
         raise NotImplementedError
 
@@ -1191,6 +1560,9 @@ the structured output for fcrdns and rpcinfo script.
             args['domain_dns'] = args.pop('dnsdomain')
         if 'forest' in args:
             args['forest_dns'] = args.pop('forest')
+        for key in ['ntlm_os', 'ntlm_version', 'smb_version']:
+            if key in args:
+                args[key.replace('_', '-')] = args.pop(key)
         return cls.searchscript(name='smb-os-discovery', values=args)
 
     @classmethod
@@ -1221,8 +1593,6 @@ the structured output for fcrdns and rpcinfo script.
             flt = self.flt_and(flt, self.searchobjectid(args.id))
         if args.no_id is not None:
             flt = self.flt_and(flt, self.searchobjectid(args.no_id, neg=True))
-        if args.host is not None:
-            flt = self.flt_and(flt, self.searchhost(args.host))
         if args.hostname is not None:
             if args.hostname[:1] in '!~':
                 flt = self.flt_and(
@@ -1247,10 +1617,6 @@ the structured output for fcrdns and rpcinfo script.
                     flt,
                     self.searchdomain(utils.str2regexp(args.domain))
                 )
-        if args.net is not None:
-            flt = self.flt_and(flt, self.searchnet(args.net))
-        if args.range is not None:
-            flt = self.flt_and(flt, self.searchrange(*args.range))
         if args.hop is not None:
             flt = self.flt_and(flt, self.searchhop(args.hop))
         if args.not_port is not None:
@@ -1330,6 +1696,20 @@ the structured output for fcrdns and rpcinfo script.
                 flt = self.flt_and(flt, self.searchhttphdr(
                     name=utils.str2regexp(args.httphdr.lower())
                 ))
+        if args.httpapp is not None:
+            if not args.httpapp:
+                flt = self.flt_and(flt, self.searchhttpapp())
+            elif ":" in args.httpapp:
+                name, version = (utils.str2regexp(v)
+                                 for v in args.httpapp.split(':', 1))
+                flt = self.flt_and(flt, self.searchhttpapp(
+                    name=name or None,
+                    version=version or None,
+                ))
+            else:
+                flt = self.flt_and(flt, self.searchhttpapp(
+                    name=utils.str2regexp(args.httpapp)
+                ))
         if args.owa:
             flt = self.flt_and(flt, self.searchowa())
         if args.vuln_boa:
@@ -1352,9 +1732,10 @@ the structured output for fcrdns and rpcinfo script.
 
 class DBNmap(DBActive):
 
+    content_handler = xmlnmap.Nmap2Txt
+
     def __init__(self, output_mode="json", output=sys.stdout):
         super(DBNmap, self).__init__()
-        self.content_handler = xmlnmap.Nmap2Txt
         self.output_function = {
             "normal": nmapout.displayhosts,
         }.get(output_mode, nmapout.displayhosts_json)
@@ -1362,7 +1743,7 @@ class DBNmap(DBActive):
 
     def store_host(self, host):
         if self.output_function is not None:
-            self.output_function([host], out=self.output)
+            self.output_function(host, out=self.output)
 
     def store_scan(self, fname, **kargs):
         """This method opens a scan result, and calls the appropriate
@@ -1375,13 +1756,34 @@ class DBNmap(DBActive):
             return False
         with utils.open_file(fname) as fdesc:
             fchar = fdesc.read(1)
+            if fchar == b'{':
+                firstline = fchar + fdesc.readline()[:-1]
         try:
             store_scan_function = {
                 b'<': self.store_scan_xml,
-                b'{': self.store_scan_json,
             }[fchar]
         except KeyError:
-            raise ValueError("Unknown file type %s" % fname)
+            if fchar == b'{':
+                try:
+                    firstres = (firstline).decode()
+                except UnicodeDecodeError:
+                    raise ValueError("Unknown file type %s" % fname)
+                try:
+                    firstres = json.loads(firstres)
+                except json.decoder.JSONDecodeError:
+                    raise ValueError("Unknown file type %s" % fname)
+                if 'addr' in firstres:
+                    store_scan_function = self.store_scan_json_ivre
+                elif 'ip' in firstres:
+                    store_scan_function = self.store_scan_json_zgrab
+                elif 'name' in firstres:
+                    store_scan_function = self.store_scan_json_zdns
+                elif 'altered_name' in firstres:
+                    store_scan_function = self.store_scan_json_zdns_recursion
+                else:
+                    raise ValueError("Unknown file type %s" % fname)
+            else:
+                raise ValueError("Unknown file type %s" % fname)
         return store_scan_function(fname, filehash=scanid, **kargs)
 
     def store_scan_xml(self, fname, callback=None, **kargs):
@@ -1408,6 +1810,8 @@ class DBNmap(DBActive):
             content_handler.callback = callback
             parser.setContentHandler(content_handler)
             parser.setEntityResolver(xmlnmap.NoExtResolver())
+            parser.setFeature(xml.sax.handler.feature_external_ges, 0)
+            parser.setFeature(xml.sax.handler.feature_external_pes, 0)
             parser.parse(utils.open_file(fname))
             if self.output_function is not None:
                 self.output_function(content_handler._db, out=self.output)
@@ -1416,11 +1820,11 @@ class DBNmap(DBActive):
         self.stop_store_hosts()
         return False
 
-    def store_scan_json(self, fname, filehash=None,
-                        needports=False, needopenports=False,
-                        categories=None, source=None,
-                        add_addr_infos=True, force_info=False,
-                        callback=None, **_):
+    def store_scan_json_ivre(self, fname, filehash=None,
+                             needports=False, needopenports=False,
+                             categories=None, source=None,
+                             add_addr_infos=True, force_info=False,
+                             callback=None, **_):
         """This method parses a JSON scan result as exported using
         `ivre scancli --json > file`, displays the parsing result, and
         return True if everything went fine, False otherwise.
@@ -1441,9 +1845,12 @@ class DBNmap(DBActive):
         with utils.open_file(fname) as fdesc:
             for line in fdesc:
                 host = self.json2dbrec(json.loads(line.decode()))
-                for fname in ["_id"]:
-                    if fname in host:
-                        del host[fname]
+                if ((needports and 'ports' not in host) or
+                    (needopenports and
+                     not host.get('openports', {}).get('count'))):
+                    continue
+                if "_id" in host:
+                    del host["_id"]
                 host["scanid"] = filehash
                 if categories:
                     host["categories"] = categories
@@ -1457,28 +1864,359 @@ class DBNmap(DBActive):
                                  self.globaldb.data.as_byip,
                                  self.globaldb.data.location_byip]:
                         host['infos'].update(func(host['addr']) or {})
-                if ((not needports or 'ports' in host) and
-                    (not needopenports or
-                     host.get('openports', {}).get('count'))):
-                    # Update schema if/as needed.
-                    while host.get(
-                            "schema_version"
-                    ) in self._schema_migrations["hosts"]:
-                        oldvers = host.get("schema_version")
-                        self._schema_migrations["hosts"][oldvers][1](host)
-                        if oldvers == host.get("schema_version"):
-                            utils.LOGGER.warning(
-                                "[%r] could not migrate host from version "
-                                "%r [%r]",
-                                self.__class__, oldvers, host
+                # Update schema if/as needed.
+                while host.get(
+                        "schema_version"
+                ) in self._schema_migrations["hosts"]:
+                    oldvers = host.get("schema_version")
+                    self._schema_migrations["hosts"][oldvers][1](host)
+                    if oldvers == host.get("schema_version"):
+                        utils.LOGGER.warning(
+                            "[%r] could not migrate host from version "
+                            "%r [%r]",
+                            self.__class__, oldvers, host
+                        )
+                        break
+                # We are about to insert data based on this file,
+                # so we want to save the scan document
+                if not scan_doc_saved:
+                    self.store_scan_doc({'_id': filehash})
+                    scan_doc_saved = True
+                self.store_host(host)
+                if callback is not None:
+                    callback(host)
+        self.stop_store_hosts()
+        return True
+
+    def store_scan_json_zgrab(self, fname, filehash=None,
+                              needports=False, needopenports=False,
+                              categories=None, source=None,
+                              add_addr_infos=True, force_info=False,
+                              callback=None, zgrab_port=None, **_):
+        """This method parses a JSON scan result produced by zgrab, displays
+        the parsing result, and return True if everything went fine,
+        False otherwise.
+
+        In backend-specific subclasses, this method stores the result
+        instead of displaying it, thanks to the `store_host`
+        method.
+
+        The callback is a function called after each host insertion
+        and takes this host as a parameter. This should be set to 'None'
+        if no action has to be taken.
+
+        """
+        if categories is None:
+            categories = []
+        scan_doc_saved = False
+        self.start_store_hosts()
+        if zgrab_port is not None:
+            zgrab_port = int(zgrab_port)
+        with utils.open_file(fname) as fdesc:
+            for line in fdesc:
+                rec = json.loads(line.decode())
+                try:
+                    host = {"addr": rec.pop('ip'),
+                            "scanid": filehash,
+                            "schema_version": xmlnmap.SCHEMA_VERSION}
+                except KeyError:
+                    # the last result (which contains a
+                    # "success_count" field) holds the scan's data
+                    if "success_count" in rec:
+                        scan_doc = {'_id': filehash, 'scanner': 'zgrab'}
+                        if 'flags' in rec:
+                            scan_doc['args'] = ' '.join(
+                                pipes.quote(elt) for elt in rec.pop('flags')
                             )
-                            break
-                    # We are about to insert data based on this file,
-                    # so we want to save the scan document
-                    if not scan_doc_saved:
-                        self.store_scan_doc({'_id': filehash})
-                        scan_doc_saved = True
-                    self.store_host(host)
+                        if "start_time" in rec:
+                            # [:19]: remove timezone info
+                            start = utils.all2datetime(
+                                rec.pop('start_time')[:19]
+                            )
+                            scan_doc['start'] = start.strftime('%s')
+                            scan_doc['startstr'] = str(start)
+                        if "end_time" in rec:
+                            # [:19]: remove timezone info
+                            end = utils.all2datetime(rec.pop('end_time')[:19])
+                            scan_doc['end'] = end.strftime('%s')
+                            scan_doc['endstr'] = str(end)
+                        if "duration" in rec:
+                            scan_doc["elapsed"] = str(rec.pop('duration'))
+                        self.update_scan_doc(filehash, scan_doc)
+                    else:
+                        utils.LOGGER.warning('Record has no "ip" field %r',
+                                             rec)
+                    continue
+                try:
+                    # [:19]: remove timezone info
+                    host['starttime'] = host['endtime'] = (
+                        rec.pop('timestamp')[:19].replace('T', ' ')
+                    )
+                except KeyError:
+                    pass
+                if categories:
+                    host["categories"] = categories
+                if source is not None:
+                    host["source"] = source
+                for key, value in rec.pop('data', {}).items():
+                    try:
+                        timestamp = (
+                            value.pop('timestamp')[:19].replace('T', ' ')
+                        )
+                    except KeyError:
+                        pass
+                    else:
+                        if 'starttime' in host:
+                            host['starttime'] = min(host['starttime'],
+                                                    timestamp)
+                        else:
+                            host['starttime'] = timestamp
+                        if 'endtime' in host:
+                            host['endtime'] = max(host['endtime'], timestamp)
+                        else:
+                            host['endtime'] = timestamp
+                    try:
+                        parser = ZGRAB_PARSERS[key]
+                    except KeyError:
+                        utils.LOGGER.warning(
+                            'Data type %r from zgrab not (yet) supported',
+                            key,
+                        )
+                    else:
+                        port = parser(value, host, port=zgrab_port)
+                        if port:
+                            host.setdefault('ports', []).append(port)
+                if not host.get('ports'):
+                    continue
+                set_openports_attribute(host)
+                if 'cpes' in host:
+                    host['cpes'] = list(host['cpes'].values())
+                    for cpe in host['cpes']:
+                        cpe['origins'] = sorted(cpe['origins'])
+                    if not host['cpes']:
+                        del host['cpes']
+                host = self.json2dbrec(host)
+                if ((needports and 'ports' not in host) or
+                    (needopenports and
+                     not any(port.get('state_state') == 'open'
+                             for port in host.get('ports', [])))):
+                    continue
+                if add_addr_infos and self.globaldb is not None and (
+                        force_info or 'infos' not in host or not host['infos']
+                ):
+                    host['infos'] = {}
+                    for func in [self.globaldb.data.country_byip,
+                                 self.globaldb.data.as_byip,
+                                 self.globaldb.data.location_byip]:
+                        host['infos'].update(func(host['addr']) or {})
+                # We are about to insert data based on this file,
+                # so we want to save the scan document
+                if not scan_doc_saved:
+                    self.store_scan_doc({'_id': filehash, 'scanner': 'zgrab'})
+                    scan_doc_saved = True
+                self.store_host(host)
+                if callback is not None:
+                    callback(host)
+        self.stop_store_hosts()
+        return True
+
+    def store_scan_json_zdns(self, fname, filehash=None,
+                             needports=False, needopenports=False,
+                             categories=None, source=None,
+                             add_addr_infos=True, force_info=False,
+                             callback=None, **_):
+        """This method parses a JSON scan result produced by zdns to create
+        hosts PTR entries, displays the parsing result, and return
+        True if everything went fine, False otherwise.
+
+        In backend-specific subclasses, this method stores the result
+        instead of displaying it, thanks to the `store_host`
+        method.
+
+        The callback is a function called after each host insertion
+        and takes this host as a parameter. This should be set to 'None'
+        if no action has to be taken.
+
+        """
+        if categories is None:
+            categories = []
+        scan_doc_saved = False
+        self.start_store_hosts()
+        with utils.open_file(fname) as fdesc:
+            for line in fdesc:
+                rec = json.loads(line.decode())
+                if rec.get('status') != 'NOERROR':
+                    continue
+                try:
+                    answers = rec['data']['answers']
+                except KeyError:
+                    continue
+                # PTR only for now
+                hostnames = [
+                    {'name': name, 'type': 'PTR',
+                     'domains': list(utils.get_domains(name))}
+                    for name in (
+                        ans['answer'].rstrip('.')
+                        for ans in answers
+                        if (ans.get('class') == 'IN' and
+                            ans.get('type') == 'PTR')
+                    )
+                ]
+                if not hostnames:
+                    continue
+                timestamp = rec.pop('timestamp')[:19].replace('T', ' ')
+                host = {
+                    "addr": rec.pop('name'),
+                    "scanid": filehash,
+                    "schema_version": xmlnmap.SCHEMA_VERSION,
+                    # [:19]: remove timezone info
+                    "starttime": timestamp,
+                    "endtime": timestamp,
+                    "hostnames": hostnames,
+                }
+                if categories:
+                    host["categories"] = categories
+                if source is not None:
+                    host["source"] = source
+                host = self.json2dbrec(host)
+                if add_addr_infos and self.globaldb is not None and (
+                        force_info or 'infos' not in host or not host['infos']
+                ):
+                    host['infos'] = {}
+                    for func in [self.globaldb.data.country_byip,
+                                 self.globaldb.data.as_byip,
+                                 self.globaldb.data.location_byip]:
+                        host['infos'].update(func(host['addr']) or {})
+                # We are about to insert data based on this file,
+                # so we want to save the scan document
+                if not scan_doc_saved:
+                    self.store_scan_doc({'_id': filehash, 'scanner': 'zdns'})
+                    scan_doc_saved = True
+                self.store_host(host)
+                if callback is not None:
+                    callback(host)
+        self.stop_store_hosts()
+        return True
+
+    def store_scan_json_zdns_recursion(self, fname, filehash=None,
+                                       needports=False, needopenports=False,
+                                       categories=None, source=None,
+                                       add_addr_infos=True, force_info=False,
+                                       callback=None, masscan_probes=None,
+                                       **_):
+        """This method parses a JSON scan result produced by zdns for
+        recursion test, displays the parsing result, and return True
+        if everything went fine, False otherwise.
+
+        In backend-specific subclasses, this method stores the result
+        instead of displaying it, thanks to the `store_host`
+        method.
+
+        The callback is a function called after each host insertion
+        and takes this host as a parameter. This should be set to 'None'
+        if no action has to be taken.
+
+        """
+        if categories is None:
+            categories = []
+        answers = set()
+        for probe in masscan_probes or []:
+            if probe.startswith('ZDNS:'):
+                answers.add(probe[5:])
+        if not answers:
+            utils.LOGGER.warning(
+                "No ZDNS probe has been defined. Please use "
+                "\"--masscan-probes ZDNS:<query>:<type>:<expected result>\" "
+                "(example: \"ZDNS:ivre.rocks:A:1.2.3.4\")"
+            )
+        scan_doc_saved = False
+        self.start_store_hosts()
+        with utils.open_file(fname) as fdesc:
+            for line in fdesc:
+                rec = json.loads(line.decode())
+                if rec.get('status') == 'TIMEOUT':
+                    continue
+                try:
+                    data = rec['data']
+                except KeyError:
+                    utils.LOGGER.warning(
+                        'Zdns record has no data entry [%r]', rec,
+                    )
+                    continue
+                try:
+                    resolver = data['resolver']
+                except KeyError:
+                    utils.LOGGER.warning(
+                        'Zdns record has no resolver entry [%r]', rec,
+                    )
+                    continue
+                try:
+                    addr, port = resolver.split(':', 1)
+                    port = int(port)
+                except Exception:
+                    utils.LOGGER.warning(
+                        'Zdns record has invalid resolver entry [%r]', rec,
+                        exc_info=True
+                    )
+                    continue
+                # Now we know for sure we have a DNS server here
+                timestamp = rec.pop('timestamp')[:19].replace('T', ' ')
+                port = {
+                    "protocol": data.get('protocol', 'udp'),
+                    "port": port,
+                    "state_state": "open",
+                    "state_reason": "response",
+                    "service_name": "domain",
+                    "service_method": "probed",
+                }
+                host = {
+                    "addr": addr,
+                    "scanid": filehash,
+                    "schema_version": xmlnmap.SCHEMA_VERSION,
+                    # [:19]: remove timezone info
+                    "starttime": timestamp,
+                    "endtime": timestamp,
+                    "ports": [port]
+                }
+                if rec.get('status') == 'NOERROR' and "answers" in data:
+                    # the DNS server **did** answer our request
+                    script = {
+                        "id": "dns-recursion",
+                        "output": "Recursion appears to be enabled",
+                    }
+                    if set(
+                        "%(name)s:%(type)s:%(answer)s" % ans
+                        for ans in data["answers"]
+                    ) != answers:
+                        script["output"] += (
+                            "\nAnswer may be incorrect!\n%s" % (
+                                "\n".join(
+                                    "%(name)s    %(type)s    %(answer)s" % ans
+                                    for ans in data["answers"]
+                                )
+                            )
+                        )
+                    port["scripts"] = [script]
+                if categories:
+                    host["categories"] = categories
+                if source is not None:
+                    host["source"] = source
+                set_openports_attribute(host)
+                host = self.json2dbrec(host)
+                if add_addr_infos and self.globaldb is not None and (
+                        force_info or 'infos' not in host or not host['infos']
+                ):
+                    host['infos'] = {}
+                    for func in [self.globaldb.data.country_byip,
+                                 self.globaldb.data.as_byip,
+                                 self.globaldb.data.location_byip]:
+                        host['infos'].update(func(host['addr']) or {})
+                # We are about to insert data based on this file,
+                # so we want to save the scan document
+                if not scan_doc_saved:
+                    self.store_scan_doc({'_id': filehash, 'scanner': 'zdns'})
+                    scan_doc_saved = True
+                self.store_host(host)
                 if callback is not None:
                     callback(host)
         self.stop_store_hosts()
@@ -1530,181 +2268,8 @@ class DBView(DBActive):
         return flt
 
     @staticmethod
-    def merge_ja3_scripts(curscript, script, script_id):
-
-        def is_server(script_id):
-            return script_id == 'ssl-ja3-server'
-
-        def ja3_equals(a, b, script_id):
-            return (a['raw'] == b['raw'] and
-                    (not is_server(script_id) or
-                     a['client']['raw'] == b['client']['raw']))
-
-        def ja3_output(ja3, script_id):
-            output = ja3['md5']
-            if is_server(script_id):
-                output += ' - ' + ja3['client']['md5']
-            return output
-        return DBView._merge_scripts(curscript, script, script_id,
-                                     ja3_equals, ja3_output)
-
-    @staticmethod
-    def merge_ua_scripts(curscript, script, script_id):
-
-        def ua_equals(a, b, script_id):
-            return a == b
-
-        def ua_output(ua, script_id):
-            return ua
-
-        return DBView._merge_scripts(curscript, script, script_id,
-                                     ua_equals, ua_output)
-
-    @staticmethod
-    def _merge_scripts(curscript, script, script_id,
-                       script_equals, script_output):
-        """Merge two scripts and return the result. Avoid duplicates.
-        """
-        to_merge_list = []
-        for to_add in script[script_id]:
-            to_merge = True
-            for cur in curscript[script_id]:
-                if script_equals(to_add, cur, script_id):
-                    to_merge = False
-                    break
-            if to_merge:
-                to_merge_list.append(to_add)
-        curscript[script_id].extend(to_merge_list)
-        # Compute output from curscript[script_id]
-        output = ""
-        for el in curscript[script_id]:
-            output += script_output(el, script_id) + '\n'
-        curscript['output'] = output
-        return curscript
-
-    @staticmethod
-    def merge_scripts(curscript, script, script_id):
-        if script_id.startswith('ssl-ja3-'):
-            return DBView.merge_ja3_scripts(curscript, script, script_id)
-        elif script_id == 'http-user-agent':
-            return DBView.merge_ua_scripts(curscript, script, script_id)
-        return {}
-
-    @staticmethod
     def merge_host_docs(rec1, rec2):
-        """Merge two host records and return the result. Unmergeable /
-        hard-to-merge fields are lost (e.g., extraports).
-
-        """
-        if rec1.get("schema_version") != rec2.get("schema_version"):
-            raise ValueError("Cannot merge host documents. "
-                             "Schema versions differ (%r != %r)" % (
-                                 rec1.get("schema_version"),
-                                 rec2.get("schema_version")))
-        rec = {}
-        if "schema_version" in rec1:
-            rec["schema_version"] = rec1["schema_version"]
-        # When we have different values, we will use the one from the
-        # most recent scan, rec2
-        if rec1.get("endtime") > rec2.get("endtime"):
-            rec1, rec2 = rec2, rec1
-        for fname, function in [("starttime", min), ("endtime", max)]:
-            try:
-                rec[fname] = function(record[fname] for record in [rec1, rec2]
-                                      if fname in record)
-            except ValueError:
-                pass
-        rec["state"] = "up" if rec1.get("state") == "up" else rec2.get("state")
-        if rec["state"] is None:
-            del rec["state"]
-        rec["categories"] = list(
-            set(rec1.get("categories", [])).union(
-                rec2.get("categories", []))
-        )
-        for field in ["addr", "os"]:
-            rec[field] = rec2[field] if rec2.get(field) else rec1.get(field)
-            if not rec[field]:
-                del rec[field]
-        rec['source'] = list(set(rec1.get('source', []))
-                             .union(set(rec2.get('source', []))))
-        rec["traces"] = rec1.get("traces", []) + rec2.get("traces", [])
-        rec["infos"] = {}
-        for record in [rec1, rec2]:
-            rec["infos"].update(record.get("infos", {}))
-        # We want to make sure of (type, name) unicity
-        hostnames = dict(((h['type'], h['name']), h.get('domains'))
-                         for h in (rec1.get("hostnames", []) +
-                                   rec2.get("hostnames", [])))
-        rec["hostnames"] = [{"type": h[0], "name": h[1], "domains": d}
-                            for h, d in viewitems(hostnames)]
-        ports = dict(((port.get("protocol"), port["port"]), port.copy())
-                     for port in rec2.get("ports", []))
-        for port in rec1.get("ports", []):
-            if (port.get('protocol'), port['port']) in ports:
-                curport = ports[(port.get('protocol'), port['port'])]
-                if 'scripts' in curport:
-                    curport['scripts'] = curport['scripts'][:]
-                else:
-                    curport['scripts'] = []
-                present_scripts = set(
-                    script['id'] for script in curport['scripts']
-                )
-                for script in port.get("scripts", []):
-                    if script['id'] not in present_scripts:
-                        curport['scripts'].append(script)
-                    elif (script['id'] in ['ssl-ja3-server',
-                                           'ssl-ja3-client',
-                                           'http-user-agent']):
-                        # Merge scripts
-                        curscript = next(x for x in curport['scripts']
-                                         if x['id'] == script['id'])
-                        DBView.merge_scripts(curscript, script, script['id'])
-                if not curport['scripts']:
-                    del curport['scripts']
-                if 'service_name' in port:
-                    if 'service_name' not in curport:
-                        for key in port:
-                            if key.startswith("service_"):
-                                curport[key] = port[key]
-                    elif port['service_name'] == curport['service_name']:
-                        # if the "old" record has information missing
-                        # from the "new" record and information from
-                        # both records is consistent, let's keep the
-                        # "old" data.
-                        for key in port:
-                            if (
-                                    key.startswith("service_") and
-                                    key not in curport
-                            ):
-                                curport[key] = port[key]
-            else:
-                ports[(port.get('protocol'), port['port'])] = port
-        rec["ports"] = sorted(viewvalues(ports), key=lambda port: (
-            port.get('protocol') or '~', port.get('port'),
-        ))
-        rec["openports"] = {}
-        for record in [rec1, rec2]:
-            for proto in record.get('openports', {}):
-                if proto == 'count':
-                    continue
-                rec['openports'].setdefault(
-                    proto, {}).setdefault(
-                        'ports', set()).update(
-                            record['openports'][proto]['ports'])
-        if rec['openports']:
-            for proto in list(rec['openports']):
-                count = len(rec['openports'][proto]['ports'])
-                rec['openports'][proto]['count'] = count
-                rec['openports']['count'] = rec['openports'].get(
-                    'count', 0) + count
-                rec['openports'][proto]['ports'] = list(
-                    rec['openports'][proto]['ports'])
-        else:
-            rec['openports']["count"] = 0
-        for field in ["traces", "infos", "ports"]:
-            if not rec[field]:
-                del rec[field]
-        return rec
+        return merge_host_docs(rec1, rec2)
 
     def merge_host(self, host):
         """Attempt to merge `host` with an existing record.
@@ -1717,7 +2282,7 @@ class DBView(DBActive):
         """
         try:
             flt = self.searchhost(host['addr'])
-            rec = next(self.get(flt))
+            rec = next(iter(self.get(flt)))
         except StopIteration:
             # "Merge" mode but no record for that host, let's add
             # the result normally
@@ -1755,7 +2320,7 @@ class DBView(DBActive):
         )
 
 
-class _RecInfo(object):
+class _RecInfo:
     __slots__ = ["count", "firstseen", "infos", "lastseen"]
 
     def __init__(self, infos):
@@ -1799,6 +2364,11 @@ class _RecInfo(object):
 
 class DBPassive(DB):
 
+    ipaddr_fields = ["addr"]
+    list_fields = ["infos.domain",
+                   "infos.domaintarget",
+                   "infos.san"]
+
     def __init__(self):
         super(DBPassive, self).__init__()
         self.argparser.add_argument('--sensor')
@@ -1817,6 +2387,16 @@ class DBPassive(DB):
             '--dnstype', metavar='DNS_TYPE',
             help='Display results for specified DNS type.',
         )
+        self.argparser.add_argument('--ssl-ja3-server',
+                                    metavar='JA3-SERVER[:JA3-CLIENT]',
+                                    nargs='?',
+                                    const=False,
+                                    default=None)
+        self.argparser.add_argument('--ssl-ja3-client',
+                                    metavar='JA3-CLIENT',
+                                    nargs='?',
+                                    const=False,
+                                    default=None)
 
     def parse_args(self, args, flt=None):
         flt = super(DBPassive, self).parse_args(args, flt=flt)
@@ -1853,7 +2433,7 @@ class DBPassive(DB):
         if args.cert is not None:
             flt = self.flt_and(
                 flt,
-                self.searchcertsubject(utils.str2regexp(args.cert)),
+                self.searchcert(subject=utils.str2regexp(args.cert)),
             )
         if args.timeago is not None:
             flt = self.flt_and(self.searchtimeago(args.timeago, new=False))
@@ -1861,6 +2441,32 @@ class DBPassive(DB):
             flt = self.flt_and(self.searchtimeago(args.timeagonew, new=True))
         if args.dnstype is not None:
             flt = self.flt_and(flt, self.searchdns(dnstype=args.dnstype))
+        if args.ssl_ja3_client is not None:
+            cli = args.ssl_ja3_client
+            flt = self.flt_and(flt, self.searchja3client(
+                value_or_hash=(
+                    False if cli is False else utils.str2regexp(cli)
+                )
+            ))
+        if args.ssl_ja3_server is not None:
+            if args.ssl_ja3_server is False:
+                # There are no additional arguments
+                flt = self.flt_and(flt, self.searchja3server())
+            else:
+                split = [utils.str2regexp(v) if v else None
+                         for v in args.ssl_ja3_server.split(':', 1)]
+                if len(split) == 1:
+                    # Only a JA3 server is given
+                    flt = self.flt_and(flt, self.searchja3server(
+                        value_or_hash=split[0]
+                    ))
+                else:
+                    # Both client and server JA3 are given
+                    flt = self.flt_and(flt, self.searchja3server(
+                        value_or_hash=split[0],
+                        client_value_or_hash=split[1],
+                    ))
+
         return flt
 
     def insert_or_update(self, timestamp, spec, getinfos=None, lastseen=None):
@@ -1897,7 +2503,7 @@ class DBPassive(DB):
         """
         def _bulk_execute(records):
             utils.LOGGER.debug("DB:local bulk upsert: %d", len(records))
-            for spec, metadata in viewitems(records):
+            for spec, metadata in records.items():
                 self.insert_or_update(metadata.firstseen,
                                       dict(spec, **metadata.data),
                                       getinfos=getinfos,
@@ -1931,6 +2537,67 @@ class DBPassive(DB):
                     records = {}
         _bulk_execute(records)
 
+    def _features_port_get(self, features, flt, yieldall, use_service,
+                           use_product, use_version):
+        curaddr = None
+        currec = None
+        if use_version:
+            def _extract(rec):
+                info = rec.get('infos', {})
+                yield (rec['port'], info.get('service_name'),
+                       info.get('service_product'),
+                       info.get('service_version'))
+                if not yieldall:
+                    return
+                if info.get('service_version') is not None:
+                    yield (rec['port'], info.get('service_name'),
+                           info.get('service_product'), None)
+                if info.get('service_product') is not None:
+                    yield (rec['port'], info.get('service_name'), None, None)
+                if info.get('service_name') is not None:
+                    yield (rec['port'], None, None, None)
+        elif use_product:
+            def _extract(rec):
+                info = rec.get('infos', {})
+                yield (rec['port'], info.get('service_name'),
+                       info.get('service_product'))
+                if not yieldall:
+                    return
+                if info.get('service_product') is not None:
+                    yield (rec['port'], info.get('service_name'), None)
+                if info.get('service_name') is not None:
+                    yield (rec['port'], None, None)
+        elif use_service:
+            def _extract(rec):
+                info = rec.get('infos', {})
+                yield (rec['port'], info.get('service_name'))
+                if not yieldall:
+                    return
+                if info.get('service_name') is not None:
+                    yield (rec['port'], None)
+        else:
+            def _extract(rec):
+                yield (rec['port'], )
+        n_features = len(features)
+        for rec in self.get(self.flt_and(flt,
+                                         self._search_field_exists('port')),
+                            sort=[('addr', 1)]):
+            # the addr aggregation could (should?) be done with an
+            # aggregation framework pipeline
+            if curaddr != rec['addr']:
+                if curaddr is not None:
+                    yield (curaddr, currec)
+                curaddr = rec['addr']
+                currec = [0] * n_features
+            for feat in _extract(rec):
+                # We could use += rec['count'] instead here
+                currec[features[feat]] = 1
+        if curaddr is not None:
+            yield (curaddr, currec)
+
+    def _search_field_exists(self, field):
+        raise NotImplementedError
+
     def searchcountry(self, code, neg=False):
         return self.searchranges(
             geoiputils.get_ranges_by_country(code), neg=neg
@@ -1955,18 +2622,6 @@ class DBPassive(DB):
         if flt:
             return (cls.flt_and if neg else cls.flt_or)(*flt)
         return cls.flt_empty if neg else cls.searchnonexistent()
-
-    def searchtorcert(self):
-        return self.searchcertsubject(
-            re.compile('^commonName=www\\.[a-z2-7]{8,20}\\.(net|com)$',
-                       flags=0),
-            issuer=re.compile('^commonName=www\\.[a-z2-7]{8,20}\\.(net|com)$',
-                              flags=0),
-        )
-
-    @staticmethod
-    def searchcertsubject(expr, issuer=None):
-        raise NotImplementedError
 
     @staticmethod
     def searchdns(name=None, reverse=False, dnstype=None, subdomains=False):
@@ -2019,12 +2674,16 @@ class DBData(DB):
 
     def infos_byip(self, addr):
         infos = {}
+        addr_type = utils.get_addr_type(addr)
+        if addr_type:
+            infos['address_type'] = addr_type
         for infos_byip in [self.as_byip,
                            self.country_byip,
                            self.location_byip]:
             infos.update(infos_byip(addr) or {})
         if infos:
             return infos
+        return None
 
     def as_byip(self, addr):
         raise NotImplementedError
@@ -2035,7 +2694,6 @@ class DBData(DB):
 
 class LockError(RuntimeError):
     """A runtime error used when a lock cannot be acquired or released."""
-    pass
 
 
 class DBAgent(DB):
@@ -2073,6 +2731,13 @@ class DBAgent(DB):
             "master": masterid,
         }
         return self._add_agent(agent)
+
+    def stop_agent(self, agentid):
+        agent = self.get_agent(agentid)
+        if agent is None:
+            raise IndexError("Agent not found [%r]" % agentid)
+        if agent['scan'] is not None:
+            self.unassign_agent(agent['_id'])
 
     def add_agent_from_string(self, masterid, string,
                               source=None, maxwaiting=60):
@@ -2232,8 +2897,9 @@ class DBAgent(DB):
             prefix=str(scanid) + '-',
             dir=self.get_local_path(agent, "input"),
             delete=False,
+            mode='w',
         ) as fdesc:
-            fdesc.write(("%s\n" % addr).encode())
+            fdesc.write("%s\n" % addr)
             return True
         return False
 
@@ -2301,9 +2967,6 @@ class DBAgent(DB):
             else:
                 itertarget.fdesc = (True, fdesc.tell())
         scan = {
-            # We need to explicitly call self.to_binary() because with
-            # MongoDB, Python 2.6 will store a unicode string that it
-            # won't be able un pickle.loads() later
             "target": self.to_binary(pickle.dumps(itertarget)),
             "target_info": target.infos,
             "agents": [],
@@ -2340,16 +3003,10 @@ and raises a LockError on failure.
         lockid = uuid.uuid1()
         scan = self._lock_scan(scanid, None, lockid.bytes)
         if scan['lock'] is not None:
-            # This might be a bug in uuid module, Python 2 only
-            #    File "/opt/python/2.6.9/lib/python2.6/uuid.py", line 145,
-            #   in __init__
-            #      int = long(('%02x'*16) % tuple(map(ord, bytes)), 16)
-            # scan['lock'] = uuid.UUID(bytes=scan['lock'])
-            scan['lock'] = uuid.UUID(
-                hex=utils.encode_hex(scan['lock']).decode()
-            )
+            scan['lock'] = uuid.UUID(bytes=scan['lock'])
         if scan['lock'] == lockid:
             return scan
+        return None
 
     def unlock_scan(self, scan):
         """Release lock for scanid. Returns True on success, and raises a
@@ -2389,9 +3046,6 @@ LockError on failure.
                 target.fdesc = (False, 0)
             else:
                 target.fdesc = (True, fdesc.tell())
-        # We need to explicitly call self.to_binary() because with
-        # MongoDB, Python 2.6 will store a unicode string that it
-        # won't be able un pickle.loads() later
         return self._update_scan_target(scanid,
                                         self.to_binary(pickle.dumps(target)))
 
@@ -2435,13 +3089,55 @@ LockError on failure.
             return self.str2id(fdesc.read())
 
 
+class DBFlowMeta(type):
+    """
+    This metaclass aims to compute 'meta_desc' and 'list_fields' once for all
+    instances of MongoDBFlow and TinyDBFlow.
+    """
+    def __new__(cls, name, bases, attrs):
+        attrs['meta_desc'] = DBFlowMeta.compute_meta_desc()
+        attrs['list_fields'] = DBFlowMeta.compute_list_fields(
+            attrs['meta_desc']
+        )
+        return type.__new__(cls, name, bases, attrs)
+
+    @staticmethod
+    def compute_meta_desc():
+        """
+        Computes meta_desc from flow.META_DESC
+        meta_desc is a "usable" version of flow.META_DESC. It is computed only
+        once at class initialization.
+        """
+        meta_desc = {}
+        for proto, configs in flow.META_DESC.items():
+            meta_desc[proto] = {}
+            for kind, values in configs.items():
+                meta_desc[proto][kind] = (
+                    utils.normalize_props(values, braces=False)
+                )
+        return meta_desc
+
+    @staticmethod
+    def compute_list_fields(meta_desc):
+        """
+        Computes list_fields from meta_desc.
+        """
+        list_fields = ['sports', 'codes', 'times']
+        for proto, kinds in meta_desc.items():
+            for kind, values in kinds.items():
+                if kind == 'keys':
+                    for name in values:
+                        list_fields.append('meta.%s.%s' % (proto, name))
+        return list_fields
+
+
 class DBFlow(DB):
     """Backend-independent code to handle flows"""
 
     @classmethod
     def date_round(cls, date):
         if isinstance(date, datetime):
-            ts = utils.datetime2timestamp(date)
+            ts = date.timestamp()
         else:
             ts = date
         ts = ts - (ts % config.FLOW_TIME_PRECISION)
@@ -2451,11 +3147,9 @@ class DBFlow(DB):
 
     @classmethod
     def from_filters(cls, filters, limit=None, skip=0, orderby="", mode=None,
-                     timeline=False):
+                     timeline=False, after=None, before=None, precision=None):
         """
         Returns a flow.Query object representing the given filters
-        Note: limit, skip, orderby, mode and timeline are IGNORED. They are
-        present only for compatibility reasons with neo4j backend.
         This should be inherited by backend specific classes
         """
         query = flow.Query()
@@ -2470,9 +3164,15 @@ class DBFlow(DB):
         Returns an array of timeslots included between start_time and end_time
         """
         times = []
-        time = cls.date_round(start_time)
-        end_timeslot = cls.date_round(end_time)
-        while time <= end_timeslot:
+        first_timeslot = cls._get_timeslot(
+            start_time, config.FLOW_TIME_PRECISION, config.FLOW_TIME_BASE
+        )
+        time = first_timeslot['start']
+        last_timeslot = cls._get_timeslot(
+            end_time, config.FLOW_TIME_PRECISION, config.FLOW_TIME_BASE
+        )
+        end_time = last_timeslot['start']
+        while time <= end_time:
             d = OrderedDict()
             d['start'] = time
             d['duration'] = config.FLOW_TIME_PRECISION
@@ -2480,8 +3180,325 @@ class DBFlow(DB):
             time += timedelta(seconds=config.FLOW_TIME_PRECISION)
         return times
 
+    @staticmethod
+    def _get_timeslot(time, precision, base):
+        ts = time.timestamp()
+        ts += utils.tz_offset(ts)
+        new_ts = ts - (((ts % precision) - base) % precision)
+        new_ts -= utils.tz_offset(new_ts)
+        d = OrderedDict()
+        d["start"] = datetime.fromtimestamp(new_ts)
+        d["duration"] = precision
+        return d
 
-class MetaDB(object):
+    def reduce_precision(self, new_precision, flt=None,
+                         before=None, after=None, current_precision=None):
+        """
+        Changes precision of timeslots to <new_precision> of flows
+        honoring:
+            - the given filter <flt> if specified
+            - that have been seen before <before> if specified
+            - that have been seen after <after> if specified
+            - timeslots changed must currently have <current_precision> if
+                specified
+        <base> represents the timestamp of the base point.
+        If <current_precision> is specified:
+            - <new_precision> must be a multiple of <current_precision>
+            - <new_precision> must be greater than <current_precision>
+        Timeslots that do not respect these rules will not be updated.
+        """
+        raise NotImplementedError("Only available with MongoDB backend.")
+
+    def list_precisions(self):
+        """
+        Retrieves the list of timeslots precisions in the database.
+        """
+        raise NotImplementedError("Only available with MongoDB backend.")
+
+    def count(self, flt):
+        """
+        Returns a dict {'client': nb_clients, 'servers': nb_servers',
+        'flows': nb_flows} according to the given filter.
+        """
+        raise NotImplementedError
+
+    def flow_daily(self, precision, flt, after=None, before=None):
+        """
+        Returns a generator within each element is a dict
+        {
+            flows: [("proto/dport", count), ...]
+            time_in_day: time
+        }
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _flow2host(row, prefix):
+        """
+        Returns a dict which represents one of the two host of the given flow.
+        prefix should be 'dst' or 'src' to get the source or the destination
+        host.
+        """
+        res = {}
+        if prefix == 'src':
+            res['addr'] = row.get('src_addr')
+        elif prefix == 'dst':
+            res['addr'] = row.get('dst_addr')
+        else:
+            raise Exception("prefix must be 'dst' or 'src'")
+        res['firstseen'] = row.get('firstseen')
+        res['lastseen'] = row.get('lastseen')
+        return res
+
+    @staticmethod
+    def _node2json(row):
+        """
+        Returns a dict representing a node in graph output.
+        row must be the representation of an host, see _flow2host.
+        """
+        return {
+            "id": row.get('addr'),
+            "label": row.get('addr'),
+            "labels": ["Host"],
+            "x": random.random(),
+            "y": random.random(),
+            "data": row
+        }
+
+    @staticmethod
+    def _edge2json_default(row, timeline=False, after=None, before=None,
+                           precision=None):
+        """
+        Returns a dict representing an edge in default graph output.
+        row must be a flow entry.
+        """
+        label = (row.get('proto') + '/' + str(row.get('dport'))
+                 if row.get('proto') in ['tcp', 'udp']
+                 else row.get('proto') + '/' + str(row.get('type')))
+        res = {
+            "id": str(row.get('_id')),
+            "label": label,
+            "labels": ["Flow"],
+            "source": row.get('src_addr'),
+            "target": row.get('dst_addr'),
+            "data": {
+                "cspkts": row.get('cspkts'),
+                "csbytes": row.get('csbytes'),
+                "count": row.get('count'),
+                "scpkts": row.get('scpkts'),
+                "scbytes": row.get('scbytes'),
+                "proto": row.get('proto'),
+                "firstseen": row.get('firstseen'),
+                "lastseen": row.get('lastseen'),
+                "__key__": str(row.get('_id')),
+                "addr_src": row.get('src_addr'),
+                "addr_dst": row.get('dst_addr')
+            }
+        }
+
+        # Fill timeline field if necessary
+        if timeline and row.get('times'):
+            # Remove timeslots that do not satisfy temporal filters
+            res["data"]["meta"] = {
+                "times": [
+                    t for t in row.get('times')
+                    if ((after is None or t.get('start') >= after) and
+                        (before is None or t.get('start') < before) and
+                        (precision is None or t.get('duration') == precision))
+                ]
+            }
+
+        if row.get('proto') in ['tcp', 'udp']:
+            res['data']["sports"] = row.get('sports')
+            res['data']["dport"] = row.get('dport')
+        elif row.get('proto') == 'icmp':
+            res['data']['codes'] = row.get('codes')
+            res['data']['type'] = row.get('type')
+        return res
+
+    @staticmethod
+    def _edge2json_flow_map(row):
+        """
+        Returns a dict representing an edge in flow map graph output.
+        row must be a flow entry.
+        """
+        if row.get('proto') in ['udp', 'tcp']:
+            flowkey = (row.get('proto'), row.get('dport'))
+        else:
+            flowkey = (row.get('proto'), None)
+        res = {
+            "id": str(row.get('_id')),
+            "label": "MERGED_FLOWS",
+            "labels": ["MERGED_FLOWS"],
+            "source": row.get('src_addr'),
+            "target": row.get('dst_addr'),
+            "data": {
+                "count": 1,
+                "flows": [flowkey]
+            }
+        }
+        return res
+
+    @staticmethod
+    def _edge2json_talk_map(row):
+        """
+        Returns a dict representing an edge in talk map graph output.
+        row must be a flow entry.
+        """
+        res = {
+            "id": str(row.get('_id')),
+            "label": "TALK",
+            "labels": ["TALK"],
+            "source": row.get('src_addr'),
+            "target": row.get('dst_addr'),
+            "data": {
+                "count": 1,
+                "flows": ["TALK"]
+            }
+        }
+        return res
+
+    @classmethod
+    def cursor2json_iter(cls, cursor, mode=None, timeline=False, after=None,
+                         before=None, precision=None):
+        """Takes a cursor on flows collection and for each entry yield a dict
+        {src: src_node, dst: dst_node, flow: flow_edge}.
+
+        """
+        random.seed()
+        for row in cursor:
+            src_node = cls._node2json(cls._flow2host(row, 'src'))
+            dst_node = cls._node2json(cls._flow2host(row, 'dst'))
+            flow_node = []
+            if mode == "flow_map":
+                flow_node = cls._edge2json_flow_map(row)
+            elif mode == "talk_map":
+                flow_node = cls._edge2json_talk_map(row)
+            else:
+                flow_node = cls._edge2json_default(row, timeline=timeline,
+                                                   after=after, before=before,
+                                                   precision=precision)
+            yield {"src": src_node, "dst": dst_node, "flow": flow_node}
+
+    @classmethod
+    def cursor2json_graph(cls, cursor, mode, timeline, after=None,
+                          before=None, precision=None):
+        """
+        Returns a dict {"nodes": [], "edges": []} representing the output
+        graph.
+        Nodes are unique hosts. Edges are flows, formatted according to the
+        given mode.
+        """
+        g = {"nodes": [], "edges": []}
+        # Store unique hosts
+        hosts = {}
+        # Store tuples (source, dest) for flow and talk map modes.
+        edges = {}
+        for row in cls.cursor2json_iter(cursor, mode=mode, timeline=timeline,
+                                        after=after, before=before,
+                                        precision=precision):
+            if mode in ["flow_map", "talk_map"]:
+                flw = row["flow"]
+                # If this edge already exists
+                if (flw["source"], flw["target"]) in edges:
+                    edge = edges[(flw["source"], flw["target"])]
+                    if mode == "flow_map":
+                        # In flow map mode, store flows data in each edge
+                        flows = flw["data"]["flows"]
+                        if flows[0] not in edge["data"]["flows"]:
+                            edge["data"]["flows"].append(flows[0])
+                            edge["data"]["count"] += 1
+                else:
+                    edges[(flw["source"], flw["target"])] = flw
+            else:
+                g["edges"].append(row["flow"])
+            for host in (row["src"], row["dst"]):
+                if host["id"] in hosts:
+                    hosts[host["id"]]["data"]["firstseen"] = min(
+                        hosts[host["id"]]["data"]["firstseen"],
+                        host["data"]["firstseen"])
+                    hosts[host["id"]]["data"]["lastseen"] = max(
+                        hosts[host["id"]]["data"]["lastseen"],
+                        host["data"]["lastseen"])
+                else:
+                    hosts[host["id"]] = host
+        g["nodes"] = list(hosts.values())
+        if mode in ["flow_map", "talk_map"]:
+            g["edges"] = list(edges.values())
+        return g
+
+    def to_graph(self, flt, limit=None, skip=None, orderby=None, mode=None,
+                 timeline=False, after=None, before=None):
+        """Returns a dict {"nodes": [], "edges": []}.
+
+        """
+        return self.cursor2json_graph(
+            self.get(flt, orderby=orderby, skip=skip, limit=limit),
+            mode,
+            timeline,
+            after=after,
+            before=before
+        )
+
+    def to_iter(self, flt, limit=None, skip=None, orderby=None, mode=None,
+                timeline=False, after=None, before=None, precision=None):
+        """
+        Returns an iterator which yields dict {"src": src, "dst": dst,
+        "flow": flow}.
+        """
+        return self.cursor2json_iter(
+            self.get(flt, orderby=orderby, skip=skip, limit=limit),
+            mode=mode,
+            timeline=timeline
+        )
+
+    def host_details(self, node_id):
+        """
+        Returns details about an host with the given address
+        Details means a dict : {
+            in_flows: set() => incoming flows (proto, dport),
+            out_flows: set() => outcoming flows (proto, dport),
+            elt: {} => data about the host
+            clients: set() => hosts which talked to this host
+            servers: set() => hosts which this host talked to
+        }
+        """
+        raise NotImplementedError
+
+    def flow_details(self, flow_id):
+        """
+        Returns details about a flow with the given ObjectId.
+        Details mean : {
+            elt: {} => basic data about the flow,
+            meta: [] => meta entries corresponding to the flow
+        }
+        """
+        raise NotImplementedError
+
+    def topvalues(self, flt, fields, collect_fields=None, sum_fields=None,
+                  limit=None, skip=None, least=False, topnbr=10):
+        """
+        Returns the top values honoring the given `query` for the given
+        fields list `fields`, counting and sorting the aggregated records
+        by `sum_fields` sum and storing the `collect_fields` fields of
+        each original entry in aggregated records as a list.
+        By default, the aggregated records are sorted by their number of
+        occurrences.
+        Return format:
+            {
+                fields: (field_1_value, field_2_value, ...),
+                count: count,
+                collected: [
+                    (collect_1_value, collect_2_value, ...),
+                    ...
+                ]
+            }
+        Collected fields are unique.
+        """
+        raise NotImplementedError
+
+
+class MetaDB:
 
     # Backend-specific purpose-specific sub-classes (e.g.,
     # MongoDBNmap) must be "registered" in this dict.
@@ -2497,20 +3514,37 @@ class MetaDB(object):
     #              [...]},
     #  [...]}
     db_types = {
-        "nmap": {"http": ("http", "HttpDBNmap"),
-                 "mongodb": ("mongo", "MongoDBNmap"),
-                 "postgresql": ("sql.postgres", "PostgresDBNmap")},
-        "passive": {"mongodb": ("mongo", "MongoDBPassive"),
-                    "postgresql": ("sql.postgres", "PostgresDBPassive"),
-                    "sqlite": ("sql.sqlite", "SqliteDBPassive")},
-        "data": {"maxmind": ("maxmind", "MaxMindDBData")},
-        "agent": {"mongodb": ("mongo", "MongoDBAgent")},
-        "flow": {"neo4j": ("neo4j", "Neo4jDBFlow"),
-                 "mongodb": ("mongo", "MongoDBFlow"),
-                 "postgresql": ("sql.postgres", "PostgresDBFlow")},
-        "view": {"http": ("http", "HttpDBView"),
-                 "mongodb": ("mongo", "MongoDBView"),
-                 "postgresql": ("sql.postgres", "PostgresDBView")},
+        "nmap": {
+            "http": ("http", "HttpDBNmap"),
+            "mongodb": ("mongo", "MongoDBNmap"),
+            "postgresql": ("sql.postgres", "PostgresDBNmap"),
+            "tinydb": ("tiny", "TinyDBNmap"),
+        },
+        "passive": {
+            "mongodb": ("mongo", "MongoDBPassive"),
+            "postgresql": ("sql.postgres", "PostgresDBPassive"),
+            "sqlite": ("sql.sqlite", "SqliteDBPassive"),
+            "tinydb": ("tiny", "TinyDBPassive"),
+        },
+        "data": {
+            "maxmind": ("maxmind", "MaxMindDBData"),
+        },
+        "agent": {
+            "mongodb": ("mongo", "MongoDBAgent"),
+            "tinydb": ("tiny", "TinyDBAgent"),
+        },
+        "flow": {
+            "mongodb": ("mongo", "MongoDBFlow"),
+            "postgresql": ("sql.postgres", "PostgresDBFlow"),
+            "tinydb": ("tiny", "TinyDBFlow"),
+        },
+        "view": {
+            "elastic": ("elastic", "ElasticDBView"),
+            "http": ("http", "HttpDBView"),
+            "mongodb": ("mongo", "MongoDBView"),
+            "postgresql": ("sql.postgres", "PostgresDBView"),
+            "tinydb": ("tiny", "TinyDBView"),
+        },
     }
 
     def __init__(self, url=None, urls=None):
@@ -2520,6 +3554,7 @@ class MetaDB(object):
     @property
     def nmap(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._nmap
         except AttributeError:
             pass
@@ -2529,6 +3564,7 @@ class MetaDB(object):
     @property
     def passive(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._passive
         except AttributeError:
             pass
@@ -2538,6 +3574,7 @@ class MetaDB(object):
     @property
     def data(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._data
         except AttributeError:
             pass
@@ -2547,6 +3584,7 @@ class MetaDB(object):
     @property
     def agent(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._agent
         except AttributeError:
             pass
@@ -2556,6 +3594,7 @@ class MetaDB(object):
     @property
     def flow(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._flow
         except AttributeError:
             pass
@@ -2565,6 +3604,7 @@ class MetaDB(object):
     @property
     def view(self):
         try:
+            # pylint: disable=access-member-before-definition
             return self._view
         except AttributeError:
             pass
@@ -2586,9 +3626,7 @@ class MetaDB(object):
                 )
                 return None
             try:
-                # we should use importlib.import_module, but it is an
-                # external module in Python 2.6.
-                module = __import__('ivre.db.%s' % modulename).db
+                module = import_module('ivre.db.%s' % modulename)
             except ImportError:
                 utils.LOGGER.error(
                     'Cannot import ivre.db.%s for %s',
@@ -2597,11 +3635,10 @@ class MetaDB(object):
                     exc_info=True,
                 )
                 return None
-            for submod in modulename.split('.'):
-                module = getattr(module, submod)
             result = getattr(module, classname)(url)
             result.globaldb = self
             return result
+        return None
 
 
 db = MetaDB(

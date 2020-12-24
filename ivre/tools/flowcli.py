@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -21,20 +21,14 @@ Access and query the flows database.
 
 See doc/FLOW.md for more information.
 """
-from __future__ import print_function
 
+
+from argparse import ArgumentParser
+import datetime
 import os
 import sys
-try:
-    reload(sys)
-except NameError:
-    pass
-else:
-    sys.setdefaultencoding('utf-8')
 
 
-from builtins import input
-from future.utils import viewitems
 try:
     import matplotlib
     import matplotlib.pyplot as plt
@@ -43,11 +37,43 @@ except ImportError:
 
 
 from ivre.db import db
-from ivre import utils
+from ivre import utils, config
+import ivre.flow
+
+
+addr_fields = {
+    'src': {'type': 'edges', 'field': 'src.addr'},
+    'dst': {'type': 'edges', 'field': 'dst.addr'},
+    'host': {'type': 'nodes', 'field': 'addr'}
+}
+
+
+def get_addr_argument(field, value):
+    addr_field = addr_fields[field]
+    # Detect CIDR
+    op = '='
+    if '/' in value:
+        op = '=~'
+    return (addr_field['type'], "%s %s %s" % (addr_field['field'], op, value))
+
+
+def print_fields():
+    equals = "=" * 7
+    title = "General"
+    sys.stdout.write("{0} {1:^10} {0}\n".format(equals, title))
+    sys.stdout.writelines(("%-12s: %s\n" % (field, ivre.flow.FIELDS[field])
+                           for field in ivre.flow.FIELDS))
+    for meta in ivre.flow.META_DESC:
+        sys.stdout.write("{0} {1:^10} {0}\n".format(equals, meta))
+        sys.stdout.writelines(("meta.%s.%s (list)\n" % (meta, name)
+                               for name in ivre.flow.META_DESC[meta]["keys"]))
+        sys.stdout.writelines(("meta.%s.%s\n" % (meta, name)
+                               for name in ivre.flow.META_DESC[meta].get(
+                                   "counters", [])))
 
 
 def main():
-    parser, _ = utils.create_argparser(__doc__)
+    parser = ArgumentParser(description=__doc__)
     parser.add_argument('--init', '--purgedb', action='store_true',
                         help='Purge or create and initialize the database.')
     parser.add_argument('--ensure-indexes', action='store_true',
@@ -86,11 +112,58 @@ def main():
     parser.add_argument('--timeline', '-T', action="store_true",
                         help='Retrieves the timeline of each flow')
     parser.add_argument('--flow-daily', action="store_true",
-                        help="Flow count per times of the day")
+                        help="Flow count per times of the day. If --precision "
+                        "is absent, it will be based on FLOW_TIME_PRECISION "
+                        "(%d)" % config.FLOW_TIME_PRECISION)
     parser.add_argument('--plot', action="store_true",
                         help="Plot data when possible (requires matplotlib).")
-    parser.add_argument('--fields', nargs='+',
-                        help="Display these fields for each entry.")
+    parser.add_argument('--fields', nargs='*',
+                        help="Without values, gives the list of available "
+                        "fields. Otherwise, display these fields for each "
+                        "entry.")
+    parser.add_argument('--reduce-precision', type=int,
+                        metavar="NEW_PRECISION",
+                        help="Only with MongoDB backend. "
+                        "Reduce precision to NEW_PRECISION for flows "
+                        "timeslots. Uses precision, before, after and "
+                        "filters.")
+    parser.add_argument("--after", "-a", type=str, help="Only with MongoDB "
+                        "backend. Get only flows seen after this date. "
+                        "Date format: YEAR-MONTH-DAY HOUR:MINUTE. "
+                        "Based on timeslots precision. If the given date is "
+                        "in the middle of a timeslot, flows start at the next "
+                        "timeslot.")
+    parser.add_argument("--before", "-b", type=str, help="Only with MongoDB "
+                        "backend. Get only flows seen before this date. "
+                        "Date format: YEAR-MONTH-DAY HOUR:MINUTE. "
+                        "Based on timeslots precision. If the given date is "
+                        "in the middle of a timeslot, the whole period is "
+                        "kept even if theoretically some flows may have been "
+                        "seen after the given date.")
+    parser.add_argument('--precision', nargs='?', default=None, const=0,
+                        help="Only With MongoDB backend. If PRECISION is "
+                        "specified, get only flows with one timeslot of "
+                        "the given precision. Otherwise, list "
+                        "precisions.", type=int)
+    parser.add_argument('--host', type=str, metavar="HOST", help="Filter on "
+                        "source OR destination IP. Accepts IP address or "
+                        "CIDR.")
+    parser.add_argument('--src', type=str, metavar="SRC", help="Filter on "
+                        "source IP. Accepts IP address or CIDR.")
+    parser.add_argument('--dst', type=str, metavar="DST", help="Filter on "
+                        "destination IP. Accepts IP address or CIDR.")
+    parser.add_argument('--proto', type=str, metavar="PROTO", help="Filter on "
+                        "transport protocol.")
+    parser.add_argument('--tcp', action="store_true", help="Alias to "
+                        "--proto tcp")
+    parser.add_argument('--udp', action="store_true", help="Alias to "
+                        "--proto udp")
+    parser.add_argument('--port', type=int, metavar="PORT", help="Alias to "
+                        "--dport")
+    parser.add_argument("--dport", type=int, metavar="DPORT", help="Filter on "
+                        "destination port.")
+    parser.add_argument("--sport", type=int, metavar="SPORT", help="Filter on "
+                        "source port.")
     args = parser.parse_args()
 
     out = sys.stdout
@@ -121,12 +194,74 @@ def main():
         db.flow.ensure_indexes()
         sys.exit(0)
 
+    if args.fields is not None and not args.fields:
+        # Print fields list
+        print_fields()
+        sys.exit(0)
+    elif args.fields is not None:
+        # Validate given fields
+        for field in args.fields:
+            ivre.flow.validate_field(field)
+
+    if args.precision == 0:
+        # Get precisions list
+        out.writelines('%d\n' % precision
+                       for precision in db.flow.list_precisions())
+        sys.exit(0)
+
     filters = {"nodes": args.node_filters or [],
                "edges": args.flow_filters or []}
 
+    args_dict = vars(args)
+
+    for key in addr_fields:
+        if args_dict[key] is not None:
+            flt_t, flt_v = get_addr_argument(key, args_dict[key])
+            filters[flt_t].append(flt_v)
+
+    if args.proto is not None:
+        filters['edges'].append("proto = %s" % args.proto)
+    for key in ['tcp', 'udp']:
+        if args_dict[key]:
+            filters['edges'].append("proto = %s" % key)
+
+    for key in ['port', 'dport']:
+        if args_dict[key] is not None:
+            filters['edges'].append("dport = %d" % args_dict[key])
+
+    if args.sport is not None:
+        filters['edges'].append("ANY sports = %d" % args.sport)
+
+    time_args = ['before', 'after']
+    time_values = {}
+    for arg in time_args:
+        time_values[arg] = (
+            datetime.datetime.strptime(args_dict[arg], "%Y-%m-%d %H:%M")
+            if args_dict[arg] is not None
+            else None)
+
     query = db.flow.from_filters(filters, limit=args.limit, skip=args.skip,
                                  orderby=args.orderby, mode=args.mode,
-                                 timeline=args.timeline)
+                                 timeline=args.timeline,
+                                 after=time_values['after'],
+                                 before=time_values['before'],
+                                 precision=args.precision)
+
+    if args.reduce_precision:
+        if os.isatty(sys.stdin.fileno()):
+            out.write(
+                'This will permanently reduce the precision of your '
+                'database. Process ? [y/N] ')
+            ans = input()
+            if ans.lower() != 'y':
+                sys.exit(-1)
+        new_precision = args.reduce_precision
+        db.flow.reduce_precision(new_precision, flt=query,
+                                 before=time_values['before'],
+                                 after=time_values['after'],
+                                 current_precision=args.precision)
+        sys.exit(0)
+
     sep = args.separator or ' | '
     coma = ' ;' if args.separator else ' ; '
     coma2 = ',' if args.separator else ', '
@@ -153,8 +288,12 @@ def main():
             ))
 
     elif args.flow_daily:
+        precision = (args.precision if args.precision is not None
+                     else config.FLOW_TIME_PRECISION)
         plot_data = {}
-        for rec in db.flow.flow_daily(query):
+        for rec in db.flow.flow_daily(precision, query,
+                                      after=time_values['after'],
+                                      before=time_values['before']):
             out.write(
                 sep.join([
                     rec["time_in_day"].strftime("%T.%f"),
@@ -164,16 +303,29 @@ def main():
 
             if args.plot:
                 for flw in rec["flows"]:
-                    plot_data.setdefault(flw[0], [[], []])
-                    plot_data[flw[0]][0].append(rec["time_in_day"])
-                    plot_data[flw[0]][1].append(flw[1])
-        if args.plot:
+                    t = rec["time_in_day"]
+                    # pyplot needs datetime objects
+                    dt = datetime.datetime(1970, 1, 1,
+                                           hour=t.hour,
+                                           minute=t.minute,
+                                           second=t.second)
+                    plot_data.setdefault(flw[0], {})
+                    plot_data[flw[0]][dt] = flw[1]
+        if args.plot and plot_data:
+            t = datetime.datetime(1970, 1, 1, 0, 0, 0)
+            t += datetime.timedelta(seconds=config.FLOW_TIME_BASE % precision)
+            times = []
+            while t < datetime.datetime(1970, 1, 2):
+                times.append(t)
+                t = t + datetime.timedelta(seconds=precision)
             ax = plt.subplots()[1]
             fmt = matplotlib.dates.DateFormatter('%H:%M:%S')
-            for flow, points in viewitems(plot_data):
-                plt.plot(points[0], points[1], label=flow, marker='o')
+            for flow, data in plot_data.items():
+                values = [(data[ti] if ti in data else 0) for ti in times]
+                plt.step(times, values, '.-', where='post', label=flow)
             plt.legend(loc='best')
             ax.xaxis.set_major_formatter(fmt)
+            plt.gcf().autofmt_xdate()
             plt.show()
 
     else:

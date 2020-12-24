@@ -1,8 +1,7 @@
 
 
 <!DOCTYPE html>
-<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
-<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<html class="writer-html5" lang="en" >
 <head>
   <meta charset="utf-8">
   
@@ -12,28 +11,30 @@
   
 
   
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/graphviz.css" type="text/css" />
+
+  
   
   
   
 
   
-  <script type="text/javascript" src="../_static/js/modernizr.min.js"></script>
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
   
     
       <script type="text/javascript" id="documentation_options" data-url_root="../" src="../_static/documentation_options.js"></script>
-        <script type="text/javascript" src="../_static/jquery.js"></script>
-        <script type="text/javascript" src="../_static/underscore.js"></script>
-        <script type="text/javascript" src="../_static/doctools.js"></script>
-        <script type="text/javascript" src="../_static/language_data.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+        <script src="../_static/language_data.js"></script>
     
     <script type="text/javascript" src="../_static/js/theme.js"></script>
 
     
-
-  
-  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
-  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
-  <link rel="stylesheet" href="../_static/graphviz.css" type="text/css" />
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Screenshots gallery" href="screenshots.html" />
@@ -51,7 +52,7 @@
           
 
           
-            <a href="../index.html" class="icon icon-home"> IVRE
+            <a href="../index.html" class="icon icon-home" alt="Documentation Home"> IVRE
           
 
           
@@ -64,7 +65,7 @@
             
             
               <div class="version">
-                0.9.13.dev
+                0.9.16.dev
               </div>
             
           
@@ -81,6 +82,7 @@
           
         </div>
 
+        
         <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
           
             
@@ -119,6 +121,7 @@
             
           
         </div>
+        
       </div>
     </nav>
 
@@ -157,7 +160,7 @@
 
   <ul class="wy-breadcrumbs">
     
-      <li><a href="../index.html">Docs</a> &raquo;</li>
+      <li><a href="../index.html" class="icon icon-home"></a> &raquo;</li>
         
           <li><a href="index.html">Overview</a> &raquo;</li>
         
@@ -187,7 +190,7 @@
 <h2>Purposes<a class="headerlink" href="#purposes" title="Permalink to this headline">¶</a></h2>
 <p>IVRE has five <strong>purposes</strong> (we use this word to refer to the different
 types of data IVRE handles), which can be stored by one or more
-<strong>back-end</strong> databases:</p>
+<strong>backend</strong> databases:</p>
 <ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">data</span></code>: associates IP ranges to Autonomous Systems (AS numbers and
 names), and geographical information (country, region, city), based
@@ -201,9 +204,9 @@ be queried using:</p>
 </ul>
 </div></blockquote>
 </li>
-<li><p><code class="docutils literal notranslate"><span class="pre">nmap</span></code> (sometimes also referred to as <code class="docutils literal notranslate"><span class="pre">scans</span></code>): contains <a class="reference external" href="http://nmap.org/">Nmap</a> and <a class="reference external" href="https://github.com/robertdavidgraham/masscan/">Masscan</a> scan results. Each
-record represents one host seen during one network scan. It can be
-queried using:</p>
+<li><p><code class="docutils literal notranslate"><span class="pre">nmap</span></code> (sometimes also referred to as <code class="docutils literal notranslate"><span class="pre">scans</span></code>): contains <a class="reference external" href="http://nmap.org/">Nmap</a>, <a class="reference external" href="https://github.com/robertdavidgraham/masscan/">Masscan</a> and <a class="reference external" href="https://zmap.io/">Zgrab /
+Zgrab2</a> scan results. Each record represents one
+host seen during one network scan. It can be queried using:</p>
 <blockquote>
 <div><ul class="simple">
 <li><p>Python API: the <code class="docutils literal notranslate"><span class="pre">db.nmap</span></code> object from the <code class="docutils literal notranslate"><span class="pre">ivre.db</span></code> module.</p></li>
@@ -256,12 +259,13 @@ your favorite open-source tools to IVRE’s databases.</p>
 </div>
 <div class="section" id="storing-data">
 <h2>Storing data<a class="headerlink" href="#storing-data" title="Permalink to this headline">¶</a></h2>
-<div class="graphviz"><img src="../_images/graphviz-f4b92e47684cfa8950057720d510a6cd4d4c065c.png" alt="digraph {
+<div class="graphviz"><img src="../_images/graphviz-31f85517c4675bbe52bfed004b37192e5d888e53.png" alt="digraph {
    &quot;maxmind.com&quot;;
    FLOWS [label=&quot;flow files&quot;];
    FLOW_LOG [label=&quot;.log files&quot;];
    PASS_LOG [label=&quot;passive_recon.log&quot;];
    XML [label=&quot;XML scan result&quot;];
+   JSON [label=&quot;JSON scan result&quot;];
    db_data [label=&quot;db.data&quot; shape=&quot;box&quot; style=&quot;filled&quot;];
    db_flow [label=&quot;db.flow&quot; shape=&quot;box&quot; style=&quot;filled&quot;];
    db_passive [label=&quot;db.passive&quot; shape=&quot;box&quot; style=&quot;filled&quot;];
@@ -275,9 +279,11 @@ your favorite open-source tools to IVRE’s databases.</p>
    FLOWS -&gt; db_flow [label=&quot;ivre\nflow2db&quot;];
    &quot;Nmap&quot; -&gt; XML [label=&quot;-oX&quot;];
    &quot;Masscan&quot; -&gt; XML [label=&quot;-oX&quot;];
-   FLOW_LOG -&gt; db_flow [label=&quot;ivre\nbro2db&quot;];
+   &quot;Zgrab2&quot; -&gt; JSON [label=&quot;-o&quot;];
+   FLOW_LOG -&gt; db_flow [label=&quot;ivre\nzeek2db&quot;];
    PASS_LOG -&gt; db_passive [label=&quot;ivre\npassiverecon2db&quot;];
    XML -&gt; db_nmap [label=&quot;ivre\nscan2db&quot;];
+   JSON -&gt; db_nmap [label=&quot;ivre\nscan2db&quot;];
    db_passive -&gt; db_view [label=&quot;ivre\ndb2view&quot;];
    db_nmap -&gt; db_view [label=&quot;ivre\ndb2view&quot;];
 }" class="graphviz" /></div>
@@ -342,11 +348,19 @@ from IVRE’s databases back into your hands.</p>
 
   <div role="contentinfo">
     <p>
-        &copy; Copyright 2011 - 2019, Pierre LALET
+        
+        &copy; Copyright 2011 - 2020, Pierre LALET
 
     </p>
   </div>
-  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/rtfd/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+    
+    
+    
+    Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a
+    
+    <a href="https://github.com/rtfd/sphinx_rtd_theme">theme</a>
+    
+    provided by <a href="https://readthedocs.org">Read the Docs</a>. 
 
 </footer>
 
@@ -357,7 +371,6 @@ from IVRE’s databases back into your hands.</p>
 
   </div>
   
-
 
   <script type="text/javascript">
       jQuery(function () {

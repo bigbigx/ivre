@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -23,17 +23,7 @@ AS number and country information.
 """
 
 
-from __future__ import print_function
-import sys
-try:
-    reload(sys)
-except NameError:
-    pass
-else:
-    sys.setdefaultencoding('utf-8')
-
-
-from future.utils import viewitems
+from argparse import ArgumentParser
 
 
 from ivre.db import db
@@ -41,7 +31,7 @@ from ivre import geoiputils, utils
 
 
 def main():
-    parser, use_argparse = utils.create_argparser(__doc__, extraargs='ip')
+    parser = ArgumentParser(description=__doc__)
     torun = []
     parser.add_argument('--download', action='store_true',
                         help='Fetch all data files.')
@@ -49,9 +39,8 @@ def main():
                         help='Create all CSV files for reverse lookups.')
     parser.add_argument('--quiet', "-q", action='store_true',
                         help='Quiet mode.')
-    if use_argparse:
-        parser.add_argument('ip', nargs='*', metavar='IP',
-                            help='Display results for specified IP addresses.')
+    parser.add_argument('ip', nargs='*', metavar='IP',
+                        help='Display results for specified IP addresses.')
     args = parser.parse_args()
     if args.download:
         geoiputils.download_all(verbose=not args.quiet)
@@ -62,9 +51,11 @@ def main():
         function(*fargs, **fkargs)
     for addr in args.ip:
         if addr.isdigit():
-            addr = int(addr)
+            addr = utils.int2ip(int(addr))
         print(addr)
+        info = utils.get_addr_type(addr)
+        if info:
+            print('    address_type %s' % info)
         for info in [db.data.as_byip(addr), db.data.location_byip(addr)]:
-            if info:
-                for key, value in viewitems(info):
-                    print('    %s %s' % (key, value))
+            for key, value in (info or {}).items():
+                print('    %s %s' % (key, value))

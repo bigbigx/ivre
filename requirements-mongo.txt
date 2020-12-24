@@ -1,4 +1,4 @@
 pymongo>=2.7.2
-pycrypto
-future
+cryptography
+pyOpenSSL>=16.1.0
 bottle

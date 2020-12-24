@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -16,21 +16,14 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
+
 """Put selected results in views."""
 
-from __future__ import print_function
-try:
-    import argparse
-except ImportError:
-    from itertools import chain
-    import optparse
-    USING_ARGPARSE = False
-else:
-    USING_ARGPARSE = True
+
+import argparse
 import os
 import sys
 
-from builtins import input
 
 from ivre import graphroute
 from ivre.db import db
@@ -43,23 +36,10 @@ from ivre.utils import display_top, CLI_ARGPARSER
 
 
 def main():
-    if USING_ARGPARSE:
-        parser = argparse.ArgumentParser(
-            description='Print out views.',
-            parents=[db.view.argparser, CLI_ARGPARSER])
-    else:
-        parser = optparse.OptionParser(
-            description='Print out views.')
-        for args, kargs in chain(db.view.argparser.args, CLI_ARGPARSER):
-            parser.add_option(*args, **kargs)
-        parser.parse_args_orig = parser.parse_args
-
-        def my_parse_args():
-            res = parser.parse_args_orig()
-            res[0].ensure_value('ips', res[1])
-            return res[0]
-        parser.parse_args = my_parse_args
-        parser.add_argument = parser.add_option
+    parser = argparse.ArgumentParser(
+        description='Print out views.',
+        parents=[db.view.argparser, CLI_ARGPARSER],
+    )
 
     flt = db.view.flt_empty
 
@@ -120,9 +100,19 @@ def main():
             )
             ans = input()
             if ans.lower() not in ['y', 'yes']:
-                exit(0)
+                sys.exit(0)
         db.view.init()
-        exit(0)
+        sys.exit(0)
+    if args.ensure_indexes:
+        if os.isatty(sys.stdin.fileno()):
+            sys.stdout.write(
+                'This will lock your database. '
+                'Process ? [y/N] ')
+            ans = input()
+            if ans.lower() != 'y':
+                sys.exit(-1)
+        db.view.ensure_indexes()
+        sys.exit(0)
 
     if args.top is not None:
         display_top(db.view, args.top, flt, args.limit)
@@ -142,6 +132,9 @@ def main():
     if args.explain:
         displayfunction_explain(flt, db.view)
         sys.exit(0)
+    if args.delete:
+        displayfunction_remove(flt, db.view)
+        sys.exit(0)
     if args.json:
         def displayfunction(x):
             return displayfunction_json(
@@ -159,9 +152,6 @@ def main():
                 x, args.graphroute, args.graphroute_include,
                 args.graphroute_dont_reset
             )
-    elif args.delete:
-        def displayfunction(x):
-            return displayfunction_remove(x, db.view)
     elif args.csv is not None:
         def displayfunction(x):
             return displayfunction_csv(
@@ -174,7 +164,7 @@ def main():
             displayhosts(cursor, out=sys.stdout)
 
     if args.update_schema:
-        db.db.nmap.migrate_schema(args.version)
+        db.view.migrate_schema(args.version)
     elif args.count:
         sys.stdout.write(
             str(db.view.count(flt)) + '\n'

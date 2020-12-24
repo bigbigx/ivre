@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -23,10 +23,10 @@ ivre scan2db.
 """
 
 
-from __future__ import print_function
+import argparse
 import atexit
 import fcntl
-from functools import reduce
+import functools
 import multiprocessing
 import os
 import re
@@ -39,29 +39,11 @@ import termios
 import time
 
 
-from future.utils import viewitems
-
-
 import ivre.agent
 import ivre.geoiputils
 import ivre.utils
 import ivre.target
 import ivre.nmapopt
-
-
-if sys.version_info >= (2, 7):
-    import functools
-    USE_PARTIAL = True
-else:
-    # Python version <= 2.6:
-    # see http://bugs.python.org/issue5228
-    # multiprocessing not compatible with functools.partial
-    USE_PARTIAL = False
-    # Also Python version <= 2.6: cannot use a function defined in
-    # another function in a multiprocessing.Pool.imap()
-
-    def _call_nmap_single_tuple(args):
-        return _call_nmap_single(*args)
 
 
 STATUS_NEW = 0
@@ -74,11 +56,11 @@ NMAP_LIMITS = {}
 
 def setnmaplimits():
     """Enforces limits from NMAP_LIMITS global variable."""
-    for limit, value in viewitems(NMAP_LIMITS):
+    for limit, value in NMAP_LIMITS.items():
         resource.setrlimit(limit, value)
 
 
-class XmlProcess(object):
+class XmlProcess:
     addrrec = re.compile(b'<address\\s+addr="([0-9\\.]+)" addrtype="ipv4"/>')
 
     def target_status(self, _):
@@ -175,7 +157,7 @@ class XmlProcessWritefile(XmlProcess):
         return True
 
     def target_status(self, target):
-        for status, statuscode in viewitems(self.status_paths):
+        for status, statuscode in self.status_paths.items():
             try:
                 os.stat(os.path.join(self.path, status,
                                      target.replace('.', '/') + '.xml'))
@@ -215,7 +197,7 @@ def call_nmap(options, xmlprocess, targets,
     fcntl.fcntl(procout, fcntl.F_SETFL, procoutfl | os.O_NONBLOCK)
     toread = [proc.stdout]
     towrite = [proc.stdin]
-    targiter = targets.__iter__()
+    targiter = iter(targets)
     while toread:
         # print("ENTERING SELECT")
         rlist, wlist = select.select(toread, towrite, [])[:2]
@@ -289,24 +271,10 @@ def _call_nmap_single(maincategory, options,
 def main():
     atexit.register(restore_echo)
     accept_target_status = set([STATUS_NEW])
-    try:
-        import argparse
-        parser = argparse.ArgumentParser(
-            description='Run massive nmap scans.',
-            parents=[ivre.target.ARGPARSER,
-                     ivre.nmapopt.ARGPARSER])
-        using_argparse = True
-    except ImportError:
-        import optparse
-        parser = optparse.OptionParser(
-            description='Run massive nmap scans.')
-        for parent in [ivre.target.ARGPARSER, ivre.nmapopt.ARGPARSER]:
-            for args, kargs in parent.args:
-                parser.add_option(*args, **kargs)
-        parser.parse_args_orig = parser.parse_args
-        parser.parse_args = lambda: parser.parse_args_orig()[0]
-        parser.add_argument = parser.add_option
-        using_argparse = False
+    parser = argparse.ArgumentParser(
+        description='Run massive nmap scans.',
+        parents=[ivre.target.ARGPARSER,
+                 ivre.nmapopt.ARGPARSER])
     parser.add_argument('--output',
                         choices=['XML', 'XMLFull', 'XMLFork', 'Test',
                                  'Count', 'List', 'ListAll',
@@ -326,14 +294,9 @@ def main():
     parser.add_argument('--nmap-max-stack-size', metavar='SIZE', type=int,
                         help="maximum size (in bytes) of each nmap "
                         "process's stack")
-    if using_argparse:
-        parser.add_argument('--again', nargs='+',
-                            choices=['up', 'down', 'unknown', 'all'],
-                            help='select status of targets to scan again')
-    else:
-        parser.add_argument('--again',
-                            choices=['up', 'down', 'unknown', 'all'],
-                            help='select status of targets to scan again')
+    parser.add_argument('--again', nargs='+',
+                        choices=['up', 'down', 'unknown', 'all'],
+                        help='select status of targets to scan again')
     args = parser.parse_args()
     if args.output == 'CommandLine':
         print("Command line to run a scan with template "
@@ -341,85 +304,33 @@ def main():
         print("    %s" % ivre.nmapopt.build_nmap_commandline(
             template=args.nmap_template,
         ))
-        exit(0)
+        sys.exit(0)
     if args.output == 'Agent':
         sys.stdout.write(ivre.agent.build_agent(template=args.nmap_template))
-        exit(0)
-    if args.output == 'Count':
-        if args.country is not None:
-            print('%s has %d IPs.' % (
-                args.country,
-                ivre.geoiputils.count_ips_by_country(args.country)
-            ))
-            exit(0)
-        if args.region is not None:
-            print('%s / %s has %d IPs.' % (
-                args.region[0], args.region[1],
-                ivre.geoiputils.count_ips_by_region(*args.region),
-            ))
-            exit(0)
-        if args.city is not None:
-            print('%s / %s has %d IPs.' % (
-                args.city[0], args.city[1],
-                ivre.geoiputils.count_ips_by_city(*args.city),
-            ))
-            exit(0)
-        if args.asnum is not None:
-            print('AS%d has %d IPs.' % (
-                args.asnum,
-                ivre.geoiputils.count_ips_by_asnum(args.asnum)
-            ))
-            exit(0)
-        if args.routable:
-            print('We have %d routable IPs.' % (
-                ivre.geoiputils.count_routable_ips()
-            ))
-            exit(0)
-        parser.error("argument --output: invalid choice: '%s' "
-                     "(only available with --country, --asnum, --region, "
-                     "--city or --routable)" % args.output)
-    if args.output in ['List', 'ListAll', 'ListCIDRs']:
-        if args.country is not None:
-            ivre.geoiputils.list_ips_by_country(
-                args.country, listall=args.output == 'ListAll',
-                listcidrs=args.output == 'ListCIDRs',
-            )
-            exit(0)
-        if args.region is not None:
-            ivre.geoiputils.list_ips_by_region(
-                *args.region,
-                listall=args.output == 'ListAll',
-                listcidrs=args.output == 'ListCIDRs'
-            )
-            exit(0)
-        if args.city is not None:
-            ivre.geoiputils.list_ips_by_city(
-                *args.city,
-                listall=args.output == 'ListAll',
-                listcidrs=args.output == 'ListCIDRs'
-            )
-            exit(0)
-        if args.asnum is not None:
-            ivre.geoiputils.list_ips_by_asnum(
-                args.asnum, listall=args.output == 'ListAll',
-                listcidrs=args.output == 'ListCIDRs',
-            )
-            exit(0)
-        if args.routable:
-            ivre.geoiputils.list_routable_ips(
-                listall=args.output == 'ListAll',
-                listcidrs=args.output == 'ListCIDRs',
-            )
-            exit(0)
-        parser.error("argument --output: invalid choice: '%s' "
-                     "(only available with --country, --region, --city, "
-                     "--asnum or --routable)" % args.output)
+        sys.exit(0)
     targets = ivre.target.target_from_args(args)
+    if args.output in ['Count', 'List', 'ListAll', 'ListCIDRs']:
+        if isinstance(targets, ivre.target.TargetFile):
+            parser.error("argument --output: invalid choice: '%s' "
+                         "(not available with this target selection)"
+                         % args.output)
+        if args.output == 'Count':
+            count = len(targets)
+            print('Target has %d IP address%s' % (count,
+                                                  'es' if count > 1 else ''))
+        elif args.output == 'List':
+            for start_stop in targets.targets.iter_ranges():
+                print('%s - %s' % start_stop)
+        else:
+            for out in {'ListAll': targets.targets.iter_addrs,
+                        'ListCIDRs': targets.targets.iter_nets}[args.output]():
+                print(out)
+        sys.exit(0)
     if targets is None:
         parser.error('one argument of --country/--region/--city/--asnum/'
                      '--range/--network/--routable/--file/--test is required')
     if args.again is not None:
-        accept_target_status = set(reduce(
+        accept_target_status = set(functools.reduce(
             lambda x, y: x + y, [{
                 'up': [STATUS_DONE_UP],
                 'down': [STATUS_DONE_DOWN],
@@ -446,29 +357,16 @@ def main():
                                               args.nmap_max_stack_size)
     if args.output == 'XMLFork':
         pool = multiprocessing.Pool(processes=args.processes)
-        if USE_PARTIAL:
-            call_nmap_single = functools.partial(_call_nmap_single,
-                                                 targets.infos[
-                                                     'categories'][0],
-                                                 options,
-                                                 accept_target_status)
-            for _ in pool.imap(call_nmap_single, targets, chunksize=1):
-                pass
-        else:
-            for _ in pool.imap(
-                    _call_nmap_single_tuple,
-                    (
-                        (targets.infos['categories'][0],
-                         options,
-                         accept_target_status,
-                         target) for target in targets
-                    ),
-                    chunksize=1
-            ):
-                pass
-        exit(0)
+        call_nmap_single = functools.partial(_call_nmap_single,
+                                             targets.infos[
+                                                 'categories'][0],
+                                             options,
+                                             accept_target_status)
+        for _ in pool.imap(call_nmap_single, targets, chunksize=1):
+            pass
+        sys.exit(0)
     elif args.output == 'ListAllRand':
-        targiter = targets.__iter__()
+        targiter = iter(targets)
         try:
             for target in targiter:
                 print(ivre.utils.int2ip(target))
@@ -481,7 +379,7 @@ def main():
             print('Use "--state %s" to resume.' % (
                 ' '.join(str(elt) for elt in targiter.getstate())
             ))
-        exit(0)
+        sys.exit(0)
     xmlprocess = {
         'XML': (XmlProcessWritefile,
                 ['./scans/%s/' % targets.infos['categories'][0]], {}),
@@ -493,4 +391,4 @@ def main():
     xmlprocess = xmlprocess[0](*xmlprocess[1], **xmlprocess[2])
     retval = call_nmap(options, xmlprocess, targets,
                        accept_target_status=accept_target_status)
-    exit(retval)
+    sys.exit(retval)

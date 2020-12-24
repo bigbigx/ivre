@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -17,14 +17,15 @@
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
 
+import argparse
 import math
 
 
 import matplotlib
 import matplotlib.pyplot
 # from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d import axes3d, Axes3D  # noqa: F401 (needed)
-
+# pylint: disable=unused-import
+from mpl_toolkits.mplot3d import axes3d, Axes3D  # noqa: F401
 
 from ivre import db
 
@@ -83,19 +84,10 @@ def graph2d(mainflt=db.db.nmap.flt_empty, alertflt=None):
 
 
 def main():
-    try:
-        import argparse
-        parser = argparse.ArgumentParser(
-            description='Plot scan results.',
-            parents=[db.db.nmap.argparser])
-    except ImportError:
-        import optparse
-        parser = optparse.OptionParser(description='Plot scan results.')
-        for args, kargs in db.db.nmap.argparser.args:
-            parser.add_option(*args, **kargs)
-        parser.parse_args_orig = parser.parse_args
-        parser.parse_args = lambda: parser.parse_args_orig()[0]
-        parser.add_argument = parser.add_option
+    parser = argparse.ArgumentParser(
+        description='Plot scan results.',
+        parents=[db.db.nmap.argparser],
+    )
     parser.add_argument('--2d', '-2', action='store_const',
                         dest='graph',
                         const=graph2d,

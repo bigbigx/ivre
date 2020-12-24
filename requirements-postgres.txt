@@ -1,5 +1,5 @@
-pycrypto
 sqlalchemy
 psycopg2
-future
+cryptography
+pyOpenSSL>=16.1.0
 bottle

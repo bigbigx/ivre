@@ -1,8 +1,7 @@
 
 
 <!DOCTYPE html>
-<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
-<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<html class="writer-html5" lang="en" >
 <head>
   <meta charset="utf-8">
   
@@ -12,28 +11,30 @@
   
 
   
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/graphviz.css" type="text/css" />
+
+  
   
   
   
 
   
-  <script type="text/javascript" src="../_static/js/modernizr.min.js"></script>
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
   
     
       <script type="text/javascript" id="documentation_options" data-url_root="../" src="../_static/documentation_options.js"></script>
-        <script type="text/javascript" src="../_static/jquery.js"></script>
-        <script type="text/javascript" src="../_static/underscore.js"></script>
-        <script type="text/javascript" src="../_static/doctools.js"></script>
-        <script type="text/javascript" src="../_static/language_data.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+        <script src="../_static/language_data.js"></script>
     
     <script type="text/javascript" src="../_static/js/theme.js"></script>
 
     
-
-  
-  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
-  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
-  <link rel="stylesheet" href="../_static/graphviz.css" type="text/css" />
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="FAQ" href="faq.html" />
@@ -51,7 +52,7 @@
           
 
           
-            <a href="../index.html" class="icon icon-home"> IVRE
+            <a href="../index.html" class="icon icon-home" alt="Documentation Home"> IVRE
           
 
           
@@ -64,7 +65,7 @@
             
             
               <div class="version">
-                0.9.13.dev
+                0.9.16.dev
               </div>
             
           
@@ -81,6 +82,7 @@
           
         </div>
 
+        
         <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
           
             
@@ -95,6 +97,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#nmap-results">Nmap results</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#flow-analysis">Flow analysis</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#passive-network-analysis">Passive network analysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#kibana-exploration">Kibana exploration</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="faq.html">FAQ</a></li>
@@ -119,6 +122,7 @@
             
           
         </div>
+        
       </div>
     </nav>
 
@@ -157,7 +161,7 @@
 
   <ul class="wy-breadcrumbs">
     
-      <li><a href="../index.html">Docs</a> &raquo;</li>
+      <li><a href="../index.html" class="icon icon-home"></a> &raquo;</li>
         
           <li><a href="index.html">Overview</a> &raquo;</li>
         
@@ -184,6 +188,7 @@
 <h1>Screenshots gallery<a class="headerlink" href="#screenshots-gallery" title="Permalink to this headline">¶</a></h1>
 <div class="section" id="nmap-results">
 <h2>Nmap results<a class="headerlink" href="#nmap-results" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference internal" href="../usage/active-recon.html#active-recon"><span class="std std-ref">Active recon</span></a>.</p>
 <p><img alt="screenshot_heatmap" src="../_images/webui-home-heatmap.png" /></p>
 <p>Home page with “heatmap” IP addresses.</p>
 <p><img alt="screenshot_heatmap_zoom" src="../_images/webui-details-heatmapzoom.png" /></p>
@@ -198,6 +203,7 @@ address space</p>
 </div>
 <div class="section" id="flow-analysis">
 <h2>Flow analysis<a class="headerlink" href="#flow-analysis" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference internal" href="../usage/flow.html#flow"><span class="std std-ref">Flow</span></a>.</p>
 <p><img alt="screenshot_flow_dns_halo" src="../_images/webui-flow-dns-halo.png" /></p>
 <p>DNS flows with halo to show connected nodes</p>
 <p><img alt="screenshot_flow_host_details" src="../_images/webui-flow-details-host.png" /></p>
@@ -209,10 +215,25 @@ address space</p>
 </div>
 <div class="section" id="passive-network-analysis">
 <h2>Passive network analysis<a class="headerlink" href="#passive-network-analysis" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference internal" href="../usage/passive.html#passive"><span class="std std-ref">Passive</span></a>.</p>
 <p><img alt="animation_passive" src="../_images/passive-cli.svg" /></p>
 <p>A simple passive analysis demonstration</p>
 <p><img alt="animation_passive_view" src="../_images/passive-view-cli.svg" /></p>
 <p>The data from the previous scene used to create an Nmap-like result</p>
+</div>
+<div class="section" id="kibana-exploration">
+<h2>Kibana exploration<a class="headerlink" href="#kibana-exploration" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference internal" href="../usage/kibana.html#ivre-with-kibana"><span class="std std-ref">IVRE with Kibana</span></a>.</p>
+<p><img alt="screenshot_kibana_cloud_domains" src="../_images/kibana-cloud-domains.png" /></p>
+<p>Domain names tag cloud</p>
+<p><img alt="screenshot_kibana_cloud_services" src="../_images/kibana-cloud-services.png" /></p>
+<p>Service names tag cloud</p>
+<p><img alt="screenshot_kibana_pie_countries_asnums" src="../_images/kibana-pie-countries_ASnums.png" /></p>
+<p>Countries / AS numbers pie</p>
+<p><img alt="screenshot_kibana_heatmap_asnames_ports" src="../_images/kibana-heatmap-asnames-ports.png" /></p>
+<p>Heatmap showing correlations between AS and open ports</p>
+<p><img alt="screenshot_kibana_worldmap" src="../_images/kibana-worldmap.png" /></p>
+<p>World map</p>
 </div>
 </div>
 
@@ -236,11 +257,19 @@ address space</p>
 
   <div role="contentinfo">
     <p>
-        &copy; Copyright 2011 - 2019, Pierre LALET
+        
+        &copy; Copyright 2011 - 2020, Pierre LALET
 
     </p>
   </div>
-  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/rtfd/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+    
+    
+    
+    Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a
+    
+    <a href="https://github.com/rtfd/sphinx_rtd_theme">theme</a>
+    
+    provided by <a href="https://readthedocs.org">Read the Docs</a>. 
 
 </footer>
 
@@ -251,7 +280,6 @@ address space</p>
 
   </div>
   
-
 
   <script type="text/javascript">
       jQuery(function () {

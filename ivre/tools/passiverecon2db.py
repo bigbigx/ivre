@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -16,17 +16,19 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-"""Update the database from output of the Bro script 'passiverecon'"""
+
+"""Update the database from output of the Zeek script 'passiverecon'"""
 
 
-import signal
+from argparse import ArgumentParser
 import functools
+import signal
+import sys
 
 
 import ivre.db
-import ivre.utils
 import ivre.passive
-import ivre.parser.bro
+import ivre.parser.zeek
 
 
 signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -37,9 +39,6 @@ def _get_ignore_rules(ignore_spec):
     """Executes the ignore_spec file and returns the ignore_rules
 dictionary.
 
-Python 2.6 bug: it has to be in a separate function than main()
-because of the exec() call and the nested functions.
-
     """
     ignore_rules = {}
     if ignore_spec is not None:
@@ -48,12 +47,12 @@ because of the exec() call and the nested functions.
     return ignore_rules
 
 
-def rec_iter(bro_parser, sensor, ignore_rules):
-    for line in bro_parser:
+def rec_iter(zeek_parser, sensor, ignore_rules):
+    for line in zeek_parser:
         line["timestamp"] = line.pop("ts")
         # skip PassiveRecon::
         line["recon_type"] = line["recon_type"][14:]
-        yield ivre.passive.handle_rec(
+        yield from ivre.passive.handle_rec(
             sensor,
             ignore_rules.get('IGNORENETS', {}),
             ignore_rules.get('NEVERIGNORE', {}),
@@ -62,8 +61,7 @@ def rec_iter(bro_parser, sensor, ignore_rules):
 
 
 def main():
-    import sys
-    parser, _ = ivre.utils.create_argparser(__doc__)
+    parser = ArgumentParser(description=__doc__)
     parser.add_argument('--sensor', '-s', help='Sensor name')
     parser.add_argument('--ignore-spec', '-i',
                         help='Filename containing ignore rules')
@@ -84,13 +82,8 @@ def main():
             ivre.db.DBPassive.insert_or_update_bulk,
             ivre.db.db.passive,
         )
-    # Python 2/3 compat: read stdin as binary in Python 3 with .buffer
-    try:
-        stdin = sys.stdin.buffer
-    except AttributeError:
-        stdin = sys.stdin
-    bro_parser = ivre.parser.bro.BroFile(stdin)
+    zeek_parser = ivre.parser.zeek.ZeekFile(sys.stdin.buffer)
     function(
-        rec_iter(bro_parser, args.sensor, ignore_rules),
+        rec_iter(zeek_parser, args.sensor, ignore_rules),
         getinfos=ivre.passive.getinfos
     )

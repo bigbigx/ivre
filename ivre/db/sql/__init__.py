@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2019 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -30,13 +30,12 @@ import json
 import re
 
 
-from builtins import int, range
-from future.utils import PY3, viewitems, viewvalues
-from past.builtins import basestring
 from sqlalchemy import and_, cast, column, create_engine, delete, desc, func, \
     exists, join, not_, nullsfirst, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
+
+from ivre.active.data import ALIASES_TABLE_ELEMS
 from ivre.db import DB, DBActive, DBFlow, DBNmap, DBPassive, DBView
 from ivre import config, utils, xmlnmap
 from ivre.db.sql.tables import N_Association_Scan_Category, \
@@ -44,12 +43,12 @@ from ivre.db.sql.tables import N_Association_Scan_Category, \
     N_Hop, N_Hostname, N_Port, N_Scan, N_ScanFile, N_Script, N_Trace, \
     V_Association_Scan_Category, V_Association_Scan_Hostname, V_Category, \
     V_Hop, V_Hostname, V_Port, V_Scan, V_Script, V_Trace, Flow, Passive, \
-    Point, INTERNAL_IP_PY2
+    Point
 
 
 # Data
 
-class CSVFile(object):
+class CSVFile:
     """A file like object generating CSV lines suitable for use with
 PostgresDB.copy_from(). Reads (at most `limit`, when it's not None)
 lines from `fname`, skipping `skip` first lines.
@@ -120,7 +119,7 @@ class ScanCSVFile(CSVFile):
             line.pop(field, None)
         line["addr"] = self.ip2internal(line['addr'])
         scanfileid = line.pop('scanid')
-        if isinstance(scanfileid, basestring):
+        if isinstance(scanfileid, str):
             scanfileid = [scanfileid]
         line["scanfileid"] = '{%s}' % ','.join('"\\x%s"' % fid
                                                for fid in scanfileid)
@@ -136,6 +135,17 @@ class ScanCSVFile(CSVFile):
                     script['masscan']['raw'] = utils.encode_b64(
                         script['masscan']['raw']
                     )
+                if 'ssl-cert' in script:
+                    for cert in script['ssl-cert']:
+                        for fld in ['not_before', 'not_after']:
+                            if fld not in cert:
+                                continue
+                            if isinstance(cert[fld], datetime.datetime):
+                                cert[fld] = cert[fld].timestamp()
+                            elif isinstance(cert[fld], str):
+                                cert[fld] = utils.all2datetime(
+                                    cert[fld]
+                                ).timestamp()
             if 'screendata' in port:
                 port['screendata'] = utils.encode_b64(port['screendata'])
         for field in ["hostnames", "ports", "info"]:
@@ -185,17 +195,26 @@ class PassiveCSVFile(CSVFile):
         line.setdefault("port", 0)
         for key in ["sensor", "value", "source", "targetval"]:
             line.setdefault(key, "")
-        for key, value in viewitems(line):
+        if (
+                line['recontype'] == 'SSL_SERVER' and
+                line['source'] in {'cert', 'cacert'}
+        ):
+            for fld in ['not_before', 'not_after']:
+                if fld not in line:
+                    continue
+                if isinstance(line[fld], datetime.datetime):
+                    line[fld] = line[fld].timestamp()
+                elif isinstance(line[fld], str):
+                    line[fld] = utils.all2datetime(line[fld]).timestamp()
+        for key, value in line.items():
             if key not in ["info", "moreinfo"] and \
-               isinstance(value, basestring):
+               isinstance(value, str):
                 try:
                     value = value.encode('latin-1')
                 except Exception:
                     pass
                 line[key] = "".join(
-                    c.decode() if b' ' <= c <= b'~' else
-                    ('\\x%02x' % ord(c))
-                    for c in (value[i:i + 1] for i in range(len(value)))
+                    chr(c) if 32 <= c <= 126 else '\\x%02x' % c for c in value
                 ).replace('\\', '\\\\')
         line["info"] = "%s" % json.dumps(
             dict((key, line.pop(key)) for key in list(line)
@@ -263,11 +282,7 @@ class SQLDB(DB):
         # their own methods.
         if not addr:
             return b""
-        if PY3:
-            return utils.ip2bin(addr)
-        if isinstance(addr, str) and INTERNAL_IP_PY2.search(addr):
-            return addr
-        return utils.encode_hex(utils.ip2bin(addr))
+        return utils.ip2bin(addr)
 
     @staticmethod
     def internal2ip(addr):
@@ -276,11 +291,7 @@ class SQLDB(DB):
         # their own methods.
         if not addr:
             return None
-        if PY3:
-            return utils.bin2ip(addr)
-        if ':' in addr or '.' in addr:
-            return addr
-        return utils.bin2ip(utils.decode_hex(addr))
+        return utils.bin2ip(addr)
 
     @staticmethod
     def to_binary(data):
@@ -293,7 +304,7 @@ class SQLDB(DB):
     @staticmethod
     def flt2str(flt):
         result = {}
-        for queryname, queries in viewitems(flt.all_queries):
+        for queryname, queries in flt.all_queries.items():
             outqueries = []
             if not isinstance(queries, list):
                 queries = [queries]
@@ -337,14 +348,13 @@ class SQLDB(DB):
     @classmethod
     def _date_round(cls, date):
         if isinstance(date, datetime.datetime):
-            ts = utils.datetime2timestamp(date)
+            ts = date.timestamp()
         else:
             ts = date
         ts = ts - (ts % config.FLOW_TIME_PRECISION)
         if isinstance(date, datetime.datetime):
             return datetime.datetime.fromtimestamp(ts)
-        else:
-            return ts
+        return ts
 
     @staticmethod
     def fmt_results(fields, result):
@@ -358,10 +368,10 @@ class SQLDB(DB):
         or an `ObjectID`s.
 
         """
-        if isinstance(oid, (int, basestring)):
+        if isinstance(oid, (int, str)):
             oid = [int(oid)]
         else:
-            oid = [int(oid) for oid in oid]
+            oid = [int(suboid) for suboid in oid]
         return cls._searchobjectid(oid, neg=neg)
 
     @staticmethod
@@ -380,12 +390,12 @@ class SQLDB(DB):
 field.
 
         """
-        if isinstance(field, basestring):
+        if isinstance(field, str):
             field = self.fields[field]
         if flt is None:
             flt = self.flt_empty
         sort = [
-            (self.fields[key] if isinstance(key, basestring) else key, way)
+            (self.fields[key] if isinstance(key, str) else key, way)
             for key, way in sort or []
         ]
         req = self._distinct_req(field, flt, **kargs)
@@ -395,7 +405,7 @@ field.
             req = req.offset(skip)
         if limit is not None:
             req = req.limit(limit)
-        return (next(iter(viewvalues(res))) for res in self.db.execute(req))
+        return (next(iter(res.values())) for res in self.db.execute(req))
 
     @staticmethod
     def _flt_and(cond1, cond2):
@@ -437,7 +447,7 @@ field.
 
     @staticmethod
     def _searchstring_list(field, value, neg=False, map_=None):
-        if not isinstance(value, basestring) and hasattr(value, '__iter__'):
+        if not isinstance(value, str) and hasattr(value, '__iter__'):
             if map_ is not None:
                 value = [map_(elt) for elt in value]
             if neg:
@@ -453,9 +463,6 @@ field.
 class SQLDBFlow(SQLDB, DBFlow):
     table_layout = namedtuple("flow_layout", ['flow'])
     tables = table_layout(Flow)
-
-    def __init__(self, url):
-        super(SQLDBFlow, self).__init__(url)
 
     @staticmethod
     def query(*args, **kargs):
@@ -511,7 +518,7 @@ class SQLDBFlow(SQLDB, DBFlow):
         raise NotImplementedError()
 
 
-class Filter(object):
+class Filter:
 
     @staticmethod
     def fltand(flt1, flt2):
@@ -527,12 +534,13 @@ class Filter(object):
 class ActiveFilter(Filter):
 
     def __init__(self, main=None, hostname=None, category=None, port=None,
-                 script=None, trace=None):
+                 script=None, tables=None, trace=None):
         self.main = main
         self.hostname = [] if hostname is None else hostname
         self.category = [] if category is None else category
         self.port = [] if port is None else port
         self.script = [] if script is None else script
+        self.tables = tables  # default value is handled in the subclasses
         self.trace = [] if trace is None else trace
 
     @property
@@ -671,20 +679,30 @@ class NmapFilter(ActiveFilter):
 
     def __init__(self, main=None, hostname=None, category=None, port=None,
                  script=None, tables=None, trace=None):
-        super(NmapFilter, self).__init__(main=main, hostname=hostname,
-                                         category=category, port=port,
-                                         script=script, trace=trace)
-        self.tables = SQLDBNmap.tables if tables is None else tables
+        super(NmapFilter, self).__init__(
+            main=main,
+            hostname=hostname,
+            category=category,
+            port=port,
+            script=script,
+            tables=SQLDBNmap.tables if tables is None else tables,
+            trace=trace,
+        )
 
 
 class ViewFilter(ActiveFilter):
 
     def __init__(self, main=None, hostname=None, category=None, port=None,
                  script=None, tables=None, trace=None):
-        super(ViewFilter, self).__init__(main=main, hostname=hostname,
-                                         category=category, port=port,
-                                         script=script, trace=trace)
-        self.tables = SQLDBView.tables if tables is None else tables
+        super(ViewFilter, self).__init__(
+            main=main,
+            hostname=hostname,
+            category=category,
+            port=port,
+            script=script,
+            tables=SQLDBView.tables if tables is None else tables,
+            trace=trace,
+        )
 
 
 class SQLDBActive(SQLDB, DBActive):
@@ -692,6 +710,7 @@ class SQLDBActive(SQLDB, DBActive):
         "http-headers",
         "http-user-agent",
         "ssh-hostkey",
+        "ssl-cert",
         "ssl-ja3-client",
         "ssl-ja3-server"
     ])
@@ -728,6 +747,16 @@ class SQLDBActive(SQLDB, DBActive):
             failed += self._migrate_schema_10_11()
         if (version or 0) < 12:
             failed += self._migrate_schema_11_12()
+        if (version or 0) < 13:
+            failed += self._migrate_schema_12_13()
+        if (version or 0) < 14:
+            failed += self._migrate_schema_13_14()
+        if (version or 0) < 15:
+            failed += self._migrate_schema_14_15()
+        if (version or 0) < 16:
+            failed += self._migrate_schema_15_16()
+        if (version or 0) < 18:
+            failed += self._migrate_schema_17_18()
         return failed
 
     def _migrate_schema_8_9(self):
@@ -862,6 +891,239 @@ the structured output for fcrdns and rpcinfo script.
         )
         return len(failed)
 
+    def _migrate_schema_12_13(self):
+        """Converts a record from version 12 to version 13. Version 13 changes
+the structured output for ms-sql-info and smq-enum-shares scripts.
+
+        """
+        failed = set()
+        req = (select([self.tables.scan.id,
+                       self.tables.script.name,
+                       self.tables.script.port,
+                       self.tables.script.output,
+                       self.tables.script.data])
+               .select_from(join(join(self.tables.scan, self.tables.port),
+                                 self.tables.script))
+               .where(and_(self.tables.scan.schema_version == 12,
+                           self.tables.script.name.in_(["ms-sql-info",
+                                                        "smb-enum-shares"]))))
+        for rec in self.db.execute(req):
+            if rec.name in rec.data:
+                migr_func = {
+                    'ms-sql-info': xmlnmap.change_ms_sql_info,
+                    'smb-enum-shares': xmlnmap.change_smb_enum_shares,
+                }[rec.name]
+                try:
+                    data = migr_func(rec.data[rec.name])
+                except Exception:
+                    utils.LOGGER.warning("Cannot migrate host %r", rec.id,
+                                         exc_info=True)
+                    failed.add(rec.id)
+                else:
+                    if data:
+                        self.db.execute(
+                            update(self.tables.script)
+                            .where(and_(self.tables.script.port == rec.port,
+                                        self.tables.script.name == rec.name))
+                            .values(data={rec.name: data})
+                        )
+        self.db.execute(
+            update(self.tables.scan)
+            .where(and_(self.tables.scan.schema_version == 12,
+                        self.tables.scan.id.notin_(failed)))
+            .values(schema_version=13)
+        )
+        return len(failed)
+
+    def _migrate_schema_13_14(self):
+        """Converts a record from version 13 to version 14. Version 14 changes
+the structured output for ssh-hostkey and ls scripts to prevent a same
+field from having different data types.
+
+        """
+        failed = set()
+        scripts = [
+            script_name for script_name, alias in ALIASES_TABLE_ELEMS.items()
+            if alias == 'ls'
+        ]
+        scripts.append('ssh-hostkey')
+        req = (select([self.tables.scan.id,
+                       self.tables.script.name,
+                       self.tables.script.port,
+                       self.tables.script.output,
+                       self.tables.script.data])
+               .select_from(join(join(self.tables.scan, self.tables.port),
+                                 self.tables.script))
+               .where(and_(self.tables.scan.schema_version == 13,
+                           self.tables.script.name.in_(scripts))))
+        for rec in self.db.execute(req):
+            if rec.name in rec.data:
+                migr_func = (
+                    xmlnmap.change_ssh_hostkey
+                    if rec.name == 'ssh-hostkey' else
+                    xmlnmap.change_ls_migrate
+                )
+                try:
+                    data = migr_func(rec.data[rec.name])
+                except Exception:
+                    utils.LOGGER.warning("Cannot migrate host %r", rec.id,
+                                         exc_info=True)
+                    failed.add(rec.id)
+                else:
+                    if data:
+                        self.db.execute(
+                            update(self.tables.script)
+                            .where(and_(self.tables.script.port == rec.port,
+                                        self.tables.script.name == rec.name))
+                            .values(data={rec.name: data})
+                        )
+        self.db.execute(
+            update(self.tables.scan)
+            .where(and_(self.tables.scan.schema_version == 13,
+                        self.tables.scan.id.notin_(failed)))
+            .values(schema_version=14)
+        )
+        return len(failed)
+
+    def _migrate_schema_14_15(self):
+        """Converts a record from version 14 to version 15. Version 15 changes
+the structured output for httpègit script to move data to values
+instead of keys.
+
+        """
+        failed = set()
+        req = (select([self.tables.scan.id,
+                       self.tables.script.name,
+                       self.tables.script.port,
+                       self.tables.script.output,
+                       self.tables.script.data])
+               .select_from(join(join(self.tables.scan, self.tables.port),
+                                 self.tables.script))
+               .where(and_(self.tables.scan.schema_version == 14,
+                           self.tables.script.name == "http-git")))
+        for rec in self.db.execute(req):
+            if rec.name in rec.data:
+                try:
+                    data = xmlnmap.change_http_git(rec.data[rec.name])
+                except Exception:
+                    utils.LOGGER.warning("Cannot migrate host %r", rec.id,
+                                         exc_info=True)
+                    failed.add(rec.id)
+                else:
+                    if data:
+                        self.db.execute(
+                            update(self.tables.script)
+                            .where(and_(self.tables.script.port == rec.port,
+                                        self.tables.script.name == rec.name))
+                            .values(data={rec.name: data})
+                        )
+        self.db.execute(
+            update(self.tables.scan)
+            .where(and_(self.tables.scan.schema_version == 14,
+                        self.tables.scan.id.notin_(failed)))
+            .values(schema_version=15)
+        )
+        return len(failed)
+
+    def _migrate_schema_15_16(self):
+        """Converts a record from version 15 to version 16. Version 16 uses a
+consistent structured output for Nmap http-server-header script (old
+versions reported `{"Server": "value"}`, while recent versions report
+`["value"]`).
+
+        """
+        failed = []
+        req = (select([self.tables.scan.id,
+                       self.tables.script.port,
+                       self.tables.script.output,
+                       self.tables.script.data])
+               .select_from(join(join(self.tables.scan, self.tables.port),
+                                 self.tables.script))
+               .where(and_(self.tables.scan.schema_version == 15,
+                           self.tables.script.name == "http-server-header")))
+        for rec in self.db.execute(req):
+            updated = False
+            if 'http-server-header' in rec.data:
+                data = rec.data['http-server-header']
+                if isinstance(data, dict):
+                    updated = True
+                    if 'Server' in data:
+                        data = [data['Server']]
+                    else:
+                        data = []
+            else:
+                try:
+                    data = [
+                        line.split(':', 1)[1].lstrip() for line in (
+                            line.strip()
+                            for line in rec.output.splitlines()
+                        ) if line.startswith('Server:')
+                    ]
+                except Exception:
+                    utils.LOGGER.warning("Cannot migrate host %r", rec.id,
+                                         exc_info=True)
+                    failed.add(rec.id)
+                else:
+                    updated = True
+            if updated:
+                self.db.execute(
+                    update(self.tables.script)
+                    .where(and_(
+                        self.tables.script.port == rec.port,
+                        self.tables.script.name == "http-server-header"
+                    ))
+                    .values(data={"http-server-header": data})
+                )
+        self.db.execute(
+            update(self.tables.scan)
+            .where(and_(self.tables.scan.schema_version == 15,
+                        self.tables.scan.id.notin_(failed)))
+            .values(schema_version=16)
+        )
+        return len(failed)
+
+    def _migrate_schema_17_18(self):
+        """Converts a record from version 17 to version 18. Version 18
+introduces HASSH (SSH fingerprint) in ssh2-enum-algos.
+
+        """
+        failed = set()
+        req = (select([self.tables.scan.id,
+                       self.tables.script.name,
+                       self.tables.script.port,
+                       self.tables.script.output,
+                       self.tables.script.data])
+               .select_from(join(join(self.tables.scan, self.tables.port),
+                                 self.tables.script))
+               .where(and_(self.tables.scan.schema_version == 17,
+                           self.tables.script.name == "ssh2-enum-algos")))
+        for rec in self.db.execute(req):
+            if rec.name in rec.data:
+                try:
+                    output, data = xmlnmap.change_ssh2_enum_algos(
+                        rec.output,
+                        rec.data[rec.name],
+                    )
+                except Exception:
+                    utils.LOGGER.warning("Cannot migrate host %r", rec.id,
+                                         exc_info=True)
+                    failed.add(rec.id)
+                else:
+                    if data:
+                        self.db.execute(
+                            update(self.tables.script)
+                            .where(and_(self.tables.script.port == rec.port,
+                                        self.tables.script.name == rec.name))
+                            .values(output=output, data={rec.name: data})
+                        )
+        self.db.execute(
+            update(self.tables.scan)
+            .where(and_(self.tables.scan.schema_version == 17,
+                        self.tables.scan.id.notin_(failed)))
+            .values(schema_version=18)
+        )
+        return len(failed)
+
     def count(self, flt, **_):
         return self.db.execute(
             flt.query(select([func.count()]))
@@ -907,8 +1169,7 @@ the structured output for fcrdns and rpcinfo script.
         req = flt.query(
             select([func.count(self.tables.scan.id),
                     self.tables.scan.info['coordinates'].astext])
-            .where(self.tables.scan.info.has_key('coordinates')),
-            # noqa: W601 (BinaryExpression)
+            .where(self.tables.scan.info.has_key('coordinates')),  # noqa: W601
         )
         if skip is not None:
             req = req.offset(skip)
@@ -937,7 +1198,7 @@ the structured output for fcrdns and rpcinfo script.
              self.tables.scan.schema_version]
         ).select_from(flt.select_from))
         for key, way in sort or []:
-            if isinstance(key, basestring) and key in self.fields:
+            if isinstance(key, str) and key in self.fields:
                 key = self.fields[key]
             req = req.order_by(key if way >= 0 else desc(key))
         if skip is not None:
@@ -992,7 +1253,7 @@ the structured output for fcrdns and rpcinfo script.
                     )
                 except ValueError:
                     pass
-                for fld, value in list(viewitems(recp)):
+                for fld, value in list(recp.items()):
                     if value is None:
                         del recp[fld]
                 for script in self.db.execute(
@@ -1000,11 +1261,17 @@ the structured output for fcrdns and rpcinfo script.
                                 self.tables.script.output,
                                 self.tables.script.data])
                         .where(self.tables.script.port == portid)):
-                    recp.setdefault('scripts', []).append(
-                        dict(id=script.name,
-                             output=script.output,
-                             **(script.data if script.data else {}))
-                    )
+                    data = dict(id=script.name,
+                                output=script.output,
+                                **(script.data if script.data else {}))
+                    if 'ssl-cert' in data:
+                        for cert in data['ssl-cert']:
+                            for fld in ['not_before', 'not_after']:
+                                try:
+                                    cert[fld] = utils.all2datetime(cert[fld])
+                                except KeyError:
+                                    pass
+                    recp.setdefault('scripts', []).append(data)
                 rec.setdefault('ports', []).append(recp)
             for trace in self.db.execute(select([self.tables.trace])
                                          .where(self.tables.trace.scan ==
@@ -1037,17 +1304,19 @@ the structured output for fcrdns and rpcinfo script.
             yield rec
 
     def remove(self, host):
-        """Removes the host scan result. "host" must be a record as yielded by
-        .get() or a valid NmapFilter() instance.
-
-        The scan files that are no longer linked to a scan are removed
-        at the end of the call.
+        """Removes the host scan result. `host` must be a record as yielded by
+.get().
 
         """
-        if isinstance(host, dict):
-            base = [host['_id']]
-        else:
-            base = host.query(select([self.tables.scan.id])).cte("base")
+        self.db.execute(delete(self.tables.scan)
+                        .where(self.tables.scan.id == host['_id']))
+
+    def remove_many(self, flt):
+        """Removes the host scan result. `flt` must be a valid NmapFilter()
+instance.
+
+        """
+        base = flt.query(select([self.tables.scan.id])).cte("base")
         self.db.execute(delete(self.tables.scan)
                         .where(self.tables.scan.id.in_(base)))
 
@@ -1068,8 +1337,12 @@ the structured output for fcrdns and rpcinfo script.
                                else (cls.tables.scan.id.in_(oid[0])))
 
     @classmethod
+    def searchversion(cls, version):
+        return cls.base_filter(main=cls.tables.scan.schema_version == version)
+
+    @classmethod
     def searchcmp(cls, key, val, cmpop):
-        if isinstance(key, basestring):
+        if isinstance(key, str):
             key = cls.fields[key]
         return cls.base_filter(main=key.op(cmpop)(val))
 
@@ -1169,8 +1442,8 @@ the structured output for fcrdns and rpcinfo script.
 
         """
         return cls.base_filter(
-            main=cls._searchstring_re(cls.tables.scan.info['as_name'].astext,
-                                      asname, neg=neg)
+            main=cls._searchstring_rec(cls.tables.scan.info['as_name'].astext,
+                                       asname, neg=neg)
         )
 
     @classmethod
@@ -1242,7 +1515,10 @@ the structured output for fcrdns and rpcinfo script.
     @classmethod
     def searchservice(cls, srv, port=None, protocol=None):
         """Search an open port with a particular service."""
-        req = cls._searchstring_re(cls.tables.port.service_name, srv)
+        if srv is False:
+            req = (cls.tables.port.service_name == None)  # noqa: E711
+        else:
+            req = cls._searchstring_re(cls.tables.port.service_name, srv)
         if port is not None:
             req = and_(req, cls.tables.port.port == port)
         if protocol is not None:
@@ -1250,22 +1526,45 @@ the structured output for fcrdns and rpcinfo script.
         return cls.base_filter(port=[(True, req)])
 
     @classmethod
-    def searchproduct(cls, product, version=None, service=None, port=None,
+    def searchproduct(cls, product=None, version=None, service=None, port=None,
                       protocol=None):
         """Search a port with a particular `product`. It is (much)
         better to provide the `service` name and/or `port` number
         since those fields are indexed.
 
         """
-        req = cls._searchstring_re(cls.tables.port.service_product, product)
+        req = True
+        if product is not None:
+            if product is False:
+                req = and_(
+                    req,
+                    cls.tables.port.service_product == None,  # noqa: E711
+                )
+            else:
+                req = and_(req, cls._searchstring_re(
+                    cls.tables.port.service_product,
+                    product,
+                ))
         if version is not None:
-            req = and_(req, cls._searchstring_re(
-                cls.tables.port.service_version, version
-            ))
+            if version is False:
+                req = and_(
+                    req,
+                    cls.tables.port.service_version == None,  # noqa: E711
+                )
+            else:
+                req = and_(req, cls._searchstring_re(
+                    cls.tables.port.service_version, version
+                ))
         if service is not None:
-            req = and_(req, cls._searchstring_re(
-                cls.tables.port.service_name, service
-            ))
+            if service is False:
+                req = and_(
+                    req,
+                    cls.tables.port.service_name == None,  # noqa: E711
+                )
+            else:
+                req = and_(req, cls._searchstring_re(
+                    cls.tables.port.service_name, service
+                ))
         if port is not None:
             req = and_(req, cls.tables.port.port == port)
         if protocol is not None:
@@ -1292,8 +1591,8 @@ the structured output for fcrdns and rpcinfo script.
             if name is None:
                 raise TypeError(".searchscript() needs a `name` arg "
                                 "when using a `values` arg")
-            basekey = xmlnmap.ALIASES_TABLE_ELEMS.get(name, name)
-            if isinstance(values, (basestring, utils.REGEXP_T)):
+            basekey = ALIASES_TABLE_ELEMS.get(name, name)
+            if isinstance(values, (str, utils.REGEXP_T)):
                 needunwind = sorted(set(cls.needunwind_script(basekey)))
             else:
                 needunwind = sorted(set(
@@ -1328,10 +1627,10 @@ the structured output for fcrdns and rpcinfo script.
                     result = {key.pop(): result}
                 return result
 
-            if isinstance(values, (basestring, utils.REGEXP_T)):
+            if isinstance(values, (str, utils.REGEXP_T)):
                 kv_generator = [(None, values)]
             else:
-                kv_generator = viewitems(values)
+                kv_generator = values.items()
 
             for key, value in kv_generator:
                 subkey = _find_subkey(key)
@@ -1391,13 +1690,6 @@ the structured output for fcrdns and rpcinfo script.
                         for subkey2 in needunwind])
             )])
         return cls.base_filter(script=[(not neg, req)])
-
-    @classmethod
-    def searchcert(cls, keytype=None):
-        if keytype is None:
-            return cls.searchscript(name="ssl-cert")
-        return cls.searchscript(name="ssl-cert",
-                                values={'pubkey': {'type': keytype}})
 
     @classmethod
     def searchsvchostname(cls, hostname):
@@ -1470,13 +1762,12 @@ the structured output for fcrdns and rpcinfo script.
                 return cls.base_filter(
                     port=[(True, cls.tables.port.id.in_(base2))]
                 )
-            else:
-                req = cls.tables.script.data.op('@>')(json.dumps(
-                    {"ls": {"volumes": [{"files": [{"filename": fname}]}]}}
-                ))
+            req = cls.tables.script.data.op('@>')(json.dumps(
+                {"ls": {"volumes": [{"files": [{"filename": fname}]}]}}
+            ))
         if scripts is None:
             return cls.base_filter(script=[(True, req)])
-        if isinstance(scripts, basestring):
+        if isinstance(scripts, str):
             scripts = [scripts]
         if len(scripts) == 1:
             return cls.base_filter(script=[(True, and_(
@@ -1595,10 +1886,7 @@ class SQLDBNmap(SQLDBActive, DBNmap):
     }
 
     base_filter = NmapFilter
-
-    def __init__(self, url):
-        super(SQLDBNmap, self).__init__(url)
-        self.content_handler = xmlnmap.Nmap2DB
+    content_handler = xmlnmap.Nmap2DB
 
     def store_or_merge_host(self, host):
         self.store_host(host)
@@ -1614,21 +1902,45 @@ class SQLDBNmap(SQLDBActive, DBNmap):
             ]
             yield rec
 
-    def remove(self, host):
-        super(SQLDBNmap, self).remove(host)
-        # remove unused scan files
+    def _remove_unused_scan_files(self):
+        """Removes unused scan files, useful when some scan results have been
+removed.
+
+        """
         base = select(
             [self.tables.association_scan_scanfile.scan_file]
         ).cte('base')
         self.db.execute(delete(self.tables.scanfile)
                         .where(self.tables.scanfile.sha256.notin_(base)))
 
+    def remove(self, host):
+        """Removes the host scan result. `host` must be a record as yielded by
+.get().
+
+The scan files that are no longer linked to a scan are removed at the
+end of the call.
+
+        """
+        super(SQLDBNmap, self).remove(host)
+        self._remove_unused_scan_files()
+
+    def remove_many(self, flt):
+        """Removes the host scan result. `flt` must be a valid NmapFilter()
+instance.
+
+The scan files that are no longer linked to a scan are removed at the
+end of the call.
+
+        """
+        super(SQLDBNmap, self).remove_many(flt)
+        self._remove_unused_scan_files()
+
     @staticmethod
     def getscanids(host):
         return host['scanid']
 
     def getscan(self, scanid):
-        if isinstance(scanid, basestring) and len(scanid) == 64:
+        if isinstance(scanid, (str, bytes)) and len(scanid) == 64:
             scanid = utils.decode_hex(scanid)
         return self.db.execute(
             select([self.tables.scanfile])
@@ -1683,9 +1995,6 @@ class SQLDBView(SQLDBActive, DBView):
 
     base_filter = ViewFilter
 
-    def __init__(self, url):
-        super(SQLDBView, self).__init__(url)
-
     def store_or_merge_host(self, host):
         # FIXME: may cause performance issues
         self.start_store_hosts()
@@ -1715,7 +2024,7 @@ class PassiveFilter(Filter):
             "tables": self.tables,
         }
 
-    def __nonzero__(self):
+    def __bool__(self):
         return self.main is not None
 
     def copy(self):
@@ -1768,7 +2077,8 @@ class SQLDBPassive(SQLDB, DBPassive):
         "infos.issuer": Passive.moreinfo.op('->>')('issuer'),
         "infos.issuer_text": Passive.moreinfo.op('->>')('issuer_text'),
         "infos.md5": Passive.moreinfo.op('->>')('md5'),
-        "infos.pubkeyalgo": Passive.moreinfo.op('->>')('pubkeyalgo'),
+        "infos.pubkey.type": (Passive.moreinfo.op('->')('pubkey')
+                              .op('->>')('type')),
         "infos.san": Passive.moreinfo.op('->>')('san'),
         "infos.sha1": Passive.moreinfo.op('->>')('sha1'),
         "infos.sha256": Passive.moreinfo.op('->>')('sha256'),
@@ -1795,9 +2105,6 @@ class SQLDBPassive(SQLDB, DBPassive):
 
     base_filter = PassiveFilter
 
-    def __init__(self, url):
-        super(SQLDBPassive, self).__init__(url)
-
     def count(self, flt):
         return self.db.execute(
             flt.query(
@@ -1818,7 +2125,7 @@ class SQLDBPassive(SQLDB, DBPassive):
 
     def _get(self, flt, limit=None, skip=None, sort=None, fields=None):
         if fields is not None:
-            utils.LOGGER.warning("Argument 'fields' provided but unused.")
+            utils.LOGGER.warning("Argument 'fields' provided but unused")
         req = flt.query(
             select([
                 self.tables.passive.id.label("_id"),
@@ -1827,7 +2134,8 @@ class SQLDBPassive(SQLDB, DBPassive):
                 self.tables.passive.lastseen, self.tables.passive.port,
                 self.tables.passive.recontype, self.tables.passive.source,
                 self.tables.passive.targetval, self.tables.passive.value,
-                self.tables.passive.info, self.tables.passive.moreinfo
+                self.tables.passive.info, self.tables.passive.moreinfo,
+                self.tables.passive.schema_version,
             ]).select_from(flt.select_from)
         )
         for key, way in sort or []:
@@ -1845,16 +2153,25 @@ returns a generator.
         """
         req = self._get(flt, limit=limit, skip=skip, sort=sort, fields=fields)
         for rec in self.db.execute(req):
-            rec = dict((key, value) for key, value in viewitems(rec)
+            rec = dict((key, value) for key, value in rec.items()
                        if value is not None)
             try:
                 rec['addr'] = self.internal2ip(rec['addr'])
             except (KeyError, ValueError):
                 pass
             rec["infos"] = dict(rec.pop("info"), **rec.pop("moreinfo"))
-            if rec.get('recontype') == 'SSL_SERVER' and \
-               rec.get('source') == 'cert':
+            if (
+                    rec.get('recontype') == 'SSL_SERVER' and
+                    rec.get('source') in {'cert', 'cacert'}
+            ):
                 rec['value'] = self.from_binary(rec['value'])
+                for fld in ['not_before', 'not_after']:
+                    try:
+                        rec['infos'][fld] = utils.all2datetime(
+                            rec['infos'][fld]
+                        )
+                    except KeyError:
+                        pass
             yield rec
 
     def get_one(self, flt, skip=None):
@@ -1884,6 +2201,17 @@ returns the first result, or None if no result exists."""
             lastseen = utils.all2datetime(lastseen)
         if addr:
             addr = self.ip2internal(addr)
+        if (
+                spec['recontype'] == 'SSL_SERVER' and
+                spec['source'] in {'cert', 'cacert'}
+        ):
+            for fld in ['not_before', 'not_after']:
+                if fld not in spec:
+                    continue
+                if isinstance(spec[fld], datetime.datetime):
+                    spec[fld] = spec[fld].timestamp()
+                elif isinstance(spec[fld], str):
+                    spec[fld] = utils.all2datetime(spec[fld]).timestamp()
         otherfields = dict(
             (key, spec.pop(key, ""))
             for key in ["sensor", "source", "targetval", "recontype", "value"]
@@ -1934,13 +2262,17 @@ passive table."""
                 except KeyError:
                     pass
                 line.update(line.pop('infos', {}))
-                for key, value in viewitems(line):
+                for key, value in line.items():
                     if isinstance(value, dict) and len(value) == 1 \
                        and "$numberLong" in value:
                         line[key] = int(value['$numberLong'])
                 yield line
         self.insert_or_update_bulk(_backupgen(backupfdesc), getinfos=None,
                                    separated_timestamps=False)
+
+    _topstructure = namedtuple("topstructure", ["fields", "where", "group_by",
+                                                "extraselectfrom"])
+    _topstructure.__new__.__defaults__ = (None,) * len(_topstructure._fields)
 
     def topvalues(self, field, flt=None, topnbr=10, sort=None,
                   limit=None, skip=None, least=False, distinct=True):
@@ -1951,24 +2283,56 @@ passive table."""
         the "count" field.
 
         """
-        if isinstance(field, basestring):
+        more_filter = None
+        if flt is None:
+            flt = PassiveFilter()
+        if field == "domains":
+            field = func.jsonb_array_elements(
+                self.tables.passive.moreinfo["domain"]
+            )
+        elif field.startswith("domains:"):
+            level = int(field[8:]) - 1
+            field = func.jsonb_array_elements_text(
+                self.tables.passive.moreinfo["domain"]
+            ).label("field")
+
+            def more_filter(base):
+                return (func.length(base.field) -
+                        func.length(func.replace(base.field, '.', '')) ==
+                        level)
+
+            # another option would be:
+            # def more_filter(base):
+            #     return base.field.op('~')('^([^\\.]+\\.){%d}[^\\.]+$' %
+            #                               level)
+        if isinstance(field, str):
             field = self.fields[field]
 
-        if field == "addr":
+        if field is not None and field == self.fields['addr']:
             outputproc = self.internal2ip
         else:
             def outputproc(val):
                 return val
-        if flt is None:
-            flt = PassiveFilter()
         order = "count" if least else desc("count")
-        req = flt.query(
-            select([(func.count() if distinct else
-                     func.sum(self.tables.passive.count))
-                    .label("count"), field])
-            .select_from(flt.select_from)
-            .group_by(field)
-        )
+        if more_filter is None:
+            req = flt.query(
+                select([(func.count() if distinct else
+                         func.sum(self.tables.passive.count))
+                        .label("count"), field])
+                .select_from(flt.select_from)
+                .group_by(field)
+            )
+        else:
+            base1 = flt.query(
+                select([(func.count() if distinct else
+                         func.sum(self.tables.passive.count))
+                        .label("count"), field])
+                .select_from(flt.select_from)
+                .group_by(field)
+            ).cte("base1")
+            req = select([base1.c.count, base1.c.field]).where(
+                more_filter(base1.c)
+            )
         return (
             {"count": result[0],
              "_id": outputproc(result[1:] if len(result) > 2 else result[1])}
@@ -2009,10 +2373,9 @@ passive table."""
         if not yieldall:
             req = req.order_by(*(nullsfirst(fld) for fld in fields))
             return self.db.execute(req)
-        else:
-            # results will be modified, we cannot keep a RowProxy
-            # instance, so we convert the results to lists
-            return (list(rec) for rec in self.db.execute(req))
+        # results will be modified, we cannot keep a RowProxy
+        # instance, so we convert the results to lists
+        return (list(rec) for rec in self.db.execute(req))
 
     @classmethod
     def searchnonexistent(cls):
@@ -2032,7 +2395,7 @@ passive table."""
 
     @classmethod
     def searchcmp(cls, key, val, cmpop):
-        if isinstance(key, basestring):
+        if isinstance(key, str):
             key = cls.fields[key]
         return PassiveFilter(main=key.op(cmpop)(val))
 
@@ -2095,11 +2458,11 @@ passive table."""
                 if len(name) == 1:
                     name = name[0]
                 else:
-                    return cls._flt_or(*(cls._searchdns(name=domain,
-                                                        reverse=reverse,
-                                                        dnstype=dnstype,
-                                                        subdomains=subdomains)
-                                         for domain in name))
+                    return cls.flt_or(*(cls._searchdns(name=domain,
+                                                       reverse=reverse,
+                                                       dnstype=dnstype,
+                                                       subdomains=subdomains)
+                                        for domain in name))
         return cls._searchdns(name=name, reverse=reverse, dnstype=dnstype,
                               subdomains=subdomains)
 
@@ -2109,10 +2472,11 @@ passive table."""
         cnd = cls.tables.passive.recontype == 'DNS_ANSWER'
         if name is not None:
             cnd &= (
-                (cls.tables.passive.moreinfo['domaintarget'
-                                             if reverse else
-                                             'domain'].has_key(name))
-                # noqa: W601 (BinaryExpression)
+                (cls.tables.passive.moreinfo[
+                    'domaintarget'
+                    if reverse else
+                    'domain'
+                ].has_key(name))   # noqa: W601
                 if subdomains else
                 cls._searchstring_re(cls.tables.passive.targetval
                                      if reverse else
@@ -2121,6 +2485,30 @@ passive table."""
         if dnstype is not None:
             cnd &= cls.tables.passive.source.op('~')('^%s-' % dnstype.upper())
         return PassiveFilter(main=cnd)
+
+    @classmethod
+    def searchmac(cls, mac=None, neg=False):
+        if mac is None:
+            if neg:
+                return PassiveFilter(
+                    main=cls.tables.passive.recontype != 'MAC_ADDRESS'
+                )
+            return PassiveFilter(
+                main=cls.tables.passive.recontype == 'MAC_ADDRESS'
+            )
+        if isinstance(mac, utils.REGEXP_T):
+            cnd = cls.tables.passive.value.op(
+                '~*' if (mac.flags & re.IGNORECASE) else '~'
+            )(mac.pattern)
+            if neg:
+                cnd = not_(cnd)
+        elif neg:
+            cnd = cls.tables.passive.value != mac
+        else:
+            cnd = cls.tables.passive.value == mac
+        return PassiveFilter(
+            main=(cls.tables.passive.recontype == 'MAC_ADDRESS') & cnd
+        )
 
     @classmethod
     def searchuseragent(cls, useragent=None, neg=False):
@@ -2172,19 +2560,58 @@ passive table."""
         ))
 
     @classmethod
-    def searchcert(cls, keytype=None):
-        if keytype is None:
-            return PassiveFilter(main=(
-                (cls.tables.passive.recontype == 'SSL_SERVER') &
-                (cls.tables.passive.source == 'cert')
-            ))
-        return PassiveFilter(main=(
+    def searchcert(cls, keytype=None, md5=None, sha1=None, sha256=None,
+                   subject=None, issuer=None, self_signed=None,
+                   pkmd5=None, pksha1=None, pksha256=None, cacert=False):
+        res = (
             (cls.tables.passive.recontype == 'SSL_SERVER') &
-            (cls.tables.passive.source == 'cert') &
-            (cls.tables.passive.moreinfo.op('->>')(
-                'pubkeyalgo'
-            ) == keytype + 'Encryption')
-        ))
+            (cls.tables.passive.source == ('cacert' if cacert else 'cert'))
+        )
+        if keytype is not None:
+            res &= (
+                cls.tables.passive.moreinfo
+                .op('->')('pubkey').op('->>')('type') == keytype
+            )
+        if md5 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('md5'), md5,
+            )
+        if sha1 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('sha1'), sha1,
+            )
+        if sha256 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('sha256'), sha256,
+            )
+        if subject is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('subject_text'),
+                subject,
+            )
+        if issuer is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('issuer_text'),
+                issuer,
+            )
+        if self_signed is not None:
+            res &= (cls.tables.passive.self_signed == self_signed)
+        if pkmd5 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo
+                .op('->')('pubkey').op('->>')('md5'), pkmd5,
+            )
+        if pksha1 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo
+                .op('->')('pubkey').op('->>')('sha1'), pksha1,
+            )
+        if pksha256 is not None:
+            res &= cls._searchstring_re(
+                cls.tables.passive.moreinfo
+                .op('->')('pubkey').op('->>')('sha256'), pksha256,
+            )
+        return PassiveFilter(main=res)
 
     @classmethod
     def _searchja3(cls, value_or_hash=None):
@@ -2247,34 +2674,6 @@ passive table."""
         ))
 
     @classmethod
-    def searchcertsubject(cls, expr, issuer=None):
-        base = (
-            (cls.tables.passive.recontype == 'SSL_SERVER') &
-            (cls.tables.passive.source == 'cert') &
-            (cls._searchstring_re(
-                cls.tables.passive.moreinfo.op('->>')('subject_text'), expr
-            ))
-        )
-        if issuer is None:
-            return PassiveFilter(main=base)
-        return PassiveFilter(main=(
-            base &
-            (cls._searchstring_re(
-                cls.tables.passive.moreinfo.op('->>')('issuer_text'), issuer
-            ))
-        ))
-
-    @classmethod
-    def searchcertissuer(cls, expr):
-        return PassiveFilter(main=(
-            (cls.tables.passive.recontype == 'SSL_SERVER') &
-            (cls.tables.passive.source == 'cert') &
-            (cls._searchstring_re(
-                cls.tables.passive.moreinfo.op('->>')('issuer_text'), expr
-            ))
-        ))
-
-    @classmethod
     def searchsshkey(cls, keytype=None):
         if keytype is None:
             return PassiveFilter(main=(
@@ -2319,10 +2718,13 @@ passive table."""
     @classmethod
     def searchservice(cls, srv, port=None, protocol=None):
         """Search a port with a particular service."""
-        flt = [cls._searchstring_re(
-            cls.tables.passive.moreinfo.op('->>')('service_name'),
-            srv
-        )]
+        if srv is False:
+            flt = ~cls.tables.passive.moreinfo.op('?')('service_name')
+        else:
+            flt = [cls._searchstring_re(
+                cls.tables.passive.moreinfo.op('->>')('service_name'),
+                srv
+            )]
         if port is not None:
             flt.append(cls.tables.passive.port == port)
         if protocol is not None and protocol != 'tcp':
@@ -2331,31 +2733,54 @@ passive table."""
         return PassiveFilter(main=and_(*flt))
 
     @classmethod
-    def searchproduct(cls, product, version=None, service=None, port=None,
+    def searchproduct(cls, product=None, version=None, service=None, port=None,
                       protocol=None):
         """Search a port with a particular `product`. It is (much)
         better to provide the `service` name and/or `port` number
         since those fields are indexed.
 
         """
-        flt = [cls._searchstring_re(
-            cls.tables.passive.moreinfo.op('->>')('service_product'),
-            product
-        )]
+        flt = []
+        if product is not None:
+            if product is False:
+                flt.append(~cls.tables.passive.moreinfo.op('?')(
+                    'service_product'
+                ))
+            else:
+                flt.append(
+                    cls._searchstring_re(
+                        cls.tables.passive.moreinfo.op('->>')(
+                            'service_product'
+                        ),
+                        product,
+                    )
+                )
         if version is not None:
-            flt.append(
-                cls._searchstring_re(
-                    cls.tables.passive.moreinfo.op('->>')('service_version'),
-                    version,
+            if version is False:
+                flt.append(~cls.tables.passive.moreinfo.op('?')(
+                    'service_version'
+                ))
+            else:
+                flt.append(
+                    cls._searchstring_re(
+                        cls.tables.passive.moreinfo.op('->>')(
+                            'service_version'
+                        ),
+                        version,
+                    )
                 )
-            )
         if service is not None:
-            flt.append(
-                cls._searchstring_re(
-                    cls.tables.passive.moreinfo.op('->>')('service_name'),
-                    service,
+            if service is False:
+                flt.append(~cls.tables.passive.moreinfo.op('?')(
+                    'service_name'
+                ))
+            else:
+                flt.append(
+                    cls._searchstring_re(
+                        cls.tables.passive.moreinfo.op('->>')('service_name'),
+                        service,
+                    )
                 )
-            )
         if port is not None:
             flt.append(cls.tables.passive.port == port)
         if protocol is not None:

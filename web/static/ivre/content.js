@@ -1,6 +1,6 @@
 /*
  * This file is part of IVRE.
- * Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+ * Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
  *
  * IVRE is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
@@ -92,16 +92,24 @@ var HELP_FILTERS = {
 	    "title": "<b>(!)</b>range:<b>[IP address]-[IP address]</b>",
 	    "content": "Look for results within a specific IP range.",
 	},
+	"ipv4": {
+	    "title": "<b>(!)</b>ipv4",
+	    "content": "Look for results within the IPv4 range.",
+	},
+	"ipv6": {
+	    "title": "<b>(!)</b>ipv6",
+	    "content": "Look for results within the IPv6 range.",
+	},
 	"hostname:": {
 	    "title": "<b>(!)</b>hostname:<b>[FQDN]</b>",
-	    "content": "Look for results with a matching hostname ([FQDN] can be specified as a string or a regexp).",
+	    "content": "Look for results with a matching hostname ([FQDN] can be specified as the exact value or a /regexp/).",
 	},
 	"domain:": {
 	    "title": "<b>(!)</b>domain:<b>[FQDN]</b>",
-	    "content": "Look for results with a hostname within a matching domain name ([FQDN] can be specified as a string or a regexp).",
+	    "content": "Look for results with a hostname within a matching domain name ([FQDN] can be specified as the exact value or a /regexp/).",
 	},
 	"category:": {
-	    "title": "<b>(!)</b>category:<b>[string or regexp]</b>",
+	    "title": "<b>(!)</b>category:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for results tagged with a matching category.",
 	},
 	"country:": {
@@ -109,7 +117,7 @@ var HELP_FILTERS = {
 	    "content": "Look for hosts located in a specific country.",
 	},
 	"city:": {
-	    "title": "<b>(!)</b>city:<b>[string or regexp]</b>",
+	    "title": "<b>(!)</b>city:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for hosts located in a specific city. <b>Use with a <code>country:</code> filter</b>.",
 	},
 	"asnum:": {
@@ -117,7 +125,7 @@ var HELP_FILTERS = {
 	    "content": "Look for hosts assigned to a specific AS given its number. Coma-separated multiple values can be used. See also <code>asname:</code>.",
 	},
 	"asname:": {
-	    "title": "<b>(!)</b>asname:<b>[string or regexp]</b>",
+	    "title": "<b>(!)</b>asname:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for hosts assigned to a specific AS given its name. See also <code>asnum:</code>.",
 	},
 	"source:": {
@@ -134,19 +142,19 @@ var HELP_FILTERS = {
 	},
 	"service:": {
 	    "title": "service:<b>[service name](:[port number])</b>",
-	    "content": "Look for a particular service, optionally on the specified port. [service name] can be either a string or a regular expression.",
+	    "content": "Look for a particular service, optionally on the specified port. [service name] can be either the exact value or a /regexp/.",
 	},
 	"product:": {
 	    "title": "product:<b>[service name]:[product name](:[port number])</b>",
-	    "content": "Look for a particular service and product, optionally on the specified port. [service name] and [product name] can be either strings or regular expressions.",
+	    "content": "Look for a particular service and product, optionally on the specified port. [service name] and [product name] can be either exact values or /regexps/.",
 	},
 	"version:": {
 	    "title": "version:<b>[service name]:[product name]:[version](:[port number])</b>",
-	    "content": "Look for a particular service, product and version, optionally on the specified port. [service name], [product name] and [version] can be either strings or regular expressions.",
+	    "content": "Look for a particular service, product and version, optionally on the specified port. [service name], [product name] and [version] can be either exact values or /regexps/.",
 	},
 	"script:": {
 	    "title": "<b>(!)</b>script:<b>[script id](:[script output])</b>",
-	    "content": "Look for a port script, given its id, and optionally for a specific output. Both [script id] and [script output] can be either strings or regular expressions.",
+	    "content": "Look for a port script, given its id, and optionally for a specific output. Both [script id] and [script output] can be either exact values or /regexps/.",
 	},
 	/* results of scripts or version scans */
 	"anonftp": {
@@ -166,7 +174,7 @@ var HELP_FILTERS = {
 	    "content": "Look for HTTP servers requiring authentication with default credentials working (the Nmap script seems to get a lot of false positives).",
 	},
 	"banner:": {
-	    "title": "banner:<b>[string or regexp]</b>",
+	    "title": "banner:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for content in service banners (as discovered by Nmap script &quot;banner&quot;).",
 	},
 	"cookie:": {
@@ -174,7 +182,7 @@ var HELP_FILTERS = {
 	    "content": "Look for HTTP servers setting a specific cookie.",
 	},
 	"file": {
-	    "title": "file<b>(:([scrtipt id](,[script id](,...)):)[pattern or regexp])</b>",
+	    "title": "file<b>(:([scrtipt id](,[script id](,...)):)[filename or /regexp/])</b>",
 	    "content": "Look for a pattern in the shared files (FTP, SMB, ...).",
 	},
 	"geovision": {
@@ -182,7 +190,7 @@ var HELP_FILTERS = {
 	    "content": "Look for Geovision webcams (see also <code>devtype:webcam</code>).",
 	},
 	"httptitle:": {
-	    "title": "httptitle:<b>[string or regexp]</b>",
+	    "title": "httptitle:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for results with a specific title on the root page of an HTTP server.",
 	},
 	"nfs": {
@@ -201,11 +209,14 @@ var HELP_FILTERS = {
 	    "title": "mysqlemptypwd",
 	    "content": "Look for MySQL servers with an empty password for the <code>root</code> account.",
 	},
-        "httphdr": {
+	"httphdr": {
 	    "title": "httphdr<b>(:[header](:[value]))</b>",
-            "title": "httphdr",
-            "content": "Look for HTTP headers."
-        },
+	    "content": "Look for HTTP headers."
+	},
+	"httpapp": {
+	    "title": "httpapp<b>(:[name](:[version]))</b>",
+	    "content": "Look for HTTP applications."
+	},
 	"owa": {
 	    "title": "owa",
 	    "content": "Look for OWA (Outlook Web App) servers.",
@@ -214,8 +225,8 @@ var HELP_FILTERS = {
 	    "title": "phpmyadmin",
 	    "content": "Look for PHPMyAdmin servers.",
 	},
-	"smb.dnsdomain:": {
-	    "title": "smb.dnsdomain:[FQDN]",
+	"smb.domain_dns:": {
+	    "title": "smb.domain_dns:[FQDN]",
 	    "content": "Search results with SMB service in a specific DNS domain.",
 	},
 	"smb.domain:": {
@@ -226,8 +237,8 @@ var HELP_FILTERS = {
 	    "title": "smb.fqdn:[NetBIOS]",
 	    "content": "Search results with SMB service in a specific host name (FQDN).",
 	},
-	"smb.forest:": {
-	    "title": "smb.forest:[FQDN]",
+	"smb.forest_dns:": {
+	    "title": "smb.forest_dns:[FQDN]",
 	    "content": "Search results with SMB service in a specific forest (DNS name).",
 	},
 	"smb.lanmanager:": {
@@ -236,15 +247,31 @@ var HELP_FILTERS = {
 	},
 	"smb.os:": {
 	    "title": "smb.os:[OS]",
-	    "content": "Search results with SMB service with a specific OS.",
+	    "content": "Search results with SMB service reporting a specific OS.",
+	},
+	"smb.ntlm-os:": {
+	    "title": "smb.ntlm-os:[Version]",
+	    "content": "Search results with NTLM protocol in SMB service reporting a specific OS.",
+	},
+	"smb.ntlm-version:": {
+	    "title": "smb.ntlm-version:[Version]",
+	    "content": "Search results with a specific versioln of the NTLM protocol in SMB service.",
+	},
+	"smb.smb-version:": {
+	    "title": "smb.smb-version:[Version]",
+	    "content": "Search results with a specific versioln of the SMB protocol.",
 	},
 	"smb.server:": {
 	    "title": "smb.server:[NetBIOS]",
-	    "content": "Search results with SMB service in a specific host name (NetBIOS).",
+	    "content": "Search results with SMB service with a specific host name (NetBIOS).",
 	},
 	"smb.workgroup:": {
 	    "title": "smb.workgroup:[NetBIOS]",
 	    "content": "Search results with SMB service in a specific workgroup (NetBIOS).",
+	},
+	"smb.guid:": {
+	    "title": "smb.guid:[GUID]",
+	    "content": "Search results with SMB service with a specific GUID.",
 	},
 	"smbshare": {
 	    "title": "smbshare<b>(:[access mode])</b>",
@@ -298,26 +325,66 @@ var HELP_FILTERS = {
 	    "title": "xp445",
 	    "content": "Look for Windows XP machines with TCP/445 port open.",
 	},
+        "cert.keytype:": {
+            "title": "cert.keytype:[exact value or /regexp/]",
+            "content": "Look for a particular certificate public key type.",
+        },
+        "cert.self_signed": {
+            "title": "<b>(!)</b>cert.self_signed",
+            "content": "Look for self signed certificates.",
+        },
+        "cert.subject:": {
+            "title": "cert.subject:[exact value or /regexp/]",
+            "content": "Look for a particular certificate subject.",
+        },
+        "cert.issuer:": {
+            "title": "cert.subject:[exact value or /regexp/]",
+            "content": "Look for a particular certificate issuer.",
+        },
+        "cert.md5:": {
+            "title": "cert.md5:[MD5 hash or /MD5 hash regexp/]",
+            "content": "Look for a particular certificate, based on the MD5 hash.",
+        },
+        "cert.sha1:": {
+            "title": "cert.sha1:[SHA1 hash or /SHA1 hash regexp/]",
+            "content": "Look for a particular certificate, based on the SHA1 hash.",
+        },
+        "cert.sha256:": {
+            "title": "cert.sha256:[SHA256 hash or /SHA256 hash regexp/]",
+            "content": "Look for a particular certificate, based on the SHA256 hash.",
+        },
+        "cert.pkmd5:": {
+            "title": "cert.pkmd5:[MD5 hash or /MD5 hash regexp/]",
+            "content": "Look for a particular certificate public key, based on the MD5 hash.",
+        },
+        "cert.pksha1:": {
+            "title": "cert.pksha1:[SHA1 hash or /SHA1 hash regexp/]",
+            "content": "Look for a particular certificate public key, based on the SHA1 hash.",
+        },
+        "cert.pksha256:": {
+            "title": "cert.pksha256:[SHA256 hash or /SHA256 hash regexp/]",
+            "content": "Look for a particular certificate public key, based on the SHA256 hash.",
+        },
 	"ssl-ja3-client": {
-	    "title": "(!)ssl-ja3-client<b>[:JA3]</b>",
+	    "title": "(!)ssl-ja3-client<b>(:[JA3])</b>",
 	    "content": "Look for hosts with a JA3 or with the given JA3.",
 	},
 	"ssl-ja3-server": {
-	    "title": "(!)ssl-ja3-server<b>[:[JA3S][:JA3]]</b>",
+	    "title": "(!)ssl-ja3-server<b>(:[JA3S](:[JA3]))</b>",
 	    "content": "Look for hosts with a JA3S, with the given JA3S, with a JA3S corresponding to the given JA3 or with the given JA3S corresponding to the given JA3",
 	},
 	"useragent": {
-	    "title": "(!)useragent<b>[:[string or regexp]]</b>",
+	    "title": "(!)useragent<b>(:[exact_value or /regexp/])</b>",
 	    "content": "Look for hosts using a User-Agent matching the argument."
 	},
 	/* OS fingerprint */
 	"os:": {
-	    "title": "os:<b>[string or regexp]</b>",
+	    "title": "os:<b>[exact_value or /regexp/]</b>",
 	    "content": "Look for a specific OS, according to Nmap's fingerprint.",
 	},
 	/* device types */
 	"devtype:": {
-	    "title": "<b>devtype:</b> or <b>devicetype:[string or regexp]</b>",
+	    "title": "<b>devtype:</b> or <b>devicetype:[exact_value or /regexp/]</b>",
 	    "content": "Look for a specific device type. See also <code>netdev</code>, <code>phonedev</code> and <code>geovision</code>.",
 	},
 	"netdev": {
@@ -331,7 +398,7 @@ var HELP_FILTERS = {
 	/* CPEs */
 	"cpe": {
 	    "title": "cpe<b>(:[type](:[vendor](:[product](:[version]))))</b>",
-	    "content": "Looks for CPEs matching an expression. Providing no value will match all the hosts that have CPE information. The fields <b>type</b>, <b>vendor</b>, <b>product</b> and <b>version</b> can be strings or /regexps/. <br/> <i>Ex:</i> o://:linux_kernel or a:apache:http_server:2.2.9",
+	    "content": "Looks for CPEs matching an expression. Providing no value will match all the hosts that have CPE information. The fields <b>type</b>, <b>vendor</b>, <b>product</b> and <b>version</b> can be exact values or /regexps/. <br/> <i>Ex:</i> o://:linux_kernel or a:apache:http_server:2.2.9",
 	},
 	/* traceroute */
 	"hop:": {
@@ -340,11 +407,11 @@ var HELP_FILTERS = {
 	},
 	"hopname:": {
 	    "title": "<b>(!)</b>hopname:<b>[FQDN]</b>",
-	    "content": "Look for results with a matching hostname in the Traceroute result ([FQDN] can be specified as a string or a regexp).",
+	    "content": "Look for results with a matching hostname in the Traceroute result ([FQDN] can be specified as the exact value or a /regexp/).",
 	},
 	"hopdomain:": {
 	    "title": "<b>(!)</b>hopdomain:<b>[FQDN]</b>",
-	    "content": "Look for results with a hostname within a matching domain name in the Traceroute result ([FQDN] can be specified as a string or a regexp).",
+	    "content": "Look for results with a hostname within a matching domain name in the Traceroute result ([FQDN] can be specified as the exact value or a /regexp/).",
 	},
 	"tcp/": {
 	    "title": "<b>(!)[port number](,[port number](,...))</b> or <b>(!)</b>tcp/<b>[port number]</b>",
@@ -466,17 +533,21 @@ var HELP_TOPVALUES = {
 	    "title": "<b>(!)</b>cpe.version<b>(:[type](:[vendor])(:[product](:[version])))</b> or <b>(!)</b>cpe<b>(:[...])",
 	    "content": "CPE versions (matching optional type / vendor / product / version filter).",
 	},
-	"smb.dnsdomain": {
-	    "title": "<b>(!)</b>smb.dnsdomain",
+	"smb.domain_dns": {
+	    "title": "<b>(!)</b>smb.domain_dns",
 	    "content": "SMB domains (DNS).",
 	},
 	"smb.domain": {
 	    "title": "<b>(!)</b>smb.domain",
 	    "content": "SMB domains.",
 	},
-	"smb.forest": {
-	    "title": "<b>(!)</b>smb.forest",
+	"smb.forest_dns": {
+	    "title": "<b>(!)</b>smb.forest_dns",
 	    "content": "SMB forests.",
+	},
+	"smb.guid": {
+	    "title": "<b>(!)</b>smb.guid",
+	    "content": "SMB GUIDs.",
 	},
 	"smb.workgroup": {
 	    "title": "<b>(!)</b>smb.workgroup",
@@ -489,6 +560,18 @@ var HELP_TOPVALUES = {
 	"smb.os": {
 	    "title": "<b>(!)</b>smb.os",
 	    "content": "OS versions according to the SMB service.",
+	},
+	"smb.ntlm-os": {
+	    "title": "<b>(!)</b>smb.ntlm-os",
+	    "content": "OS versions according to the NTLM protocol in the SMB service.",
+	},
+	"smb.ntlm-version": {
+	    "title": "<b>(!)</b>smb.ntlm-version",
+	    "content": "NTLM versions in the SMB service.",
+	},
+	"smb.smb-version": {
+	    "title": "<b>(!)</b>smb.smb-version",
+	    "content": "SMB versions.",
 	},
 	"domains": {
 	    "title": "<b>(!)</b>domains<b>(:[level])</b>:",
@@ -583,11 +666,7 @@ var HELP_TOPVALUES = {
 	    "title": "<b>(!)</b>city"
 	},
 	"net": {
-	    "content": "net",
-	    "title": "<b>(!)</b>net",
-	},
-	"net:": {
-	    "content": "net[:mask]",
+	    "content": "net(:mask)",
 	    "title": "<b>(!)</b>net:",
 	},
 	"screenwords": {
@@ -673,6 +752,18 @@ var HELP_TOPVALUES = {
 	"cert.issuer": {
 	    "content": "cert.issuer",
 	    "title": "<b>(!)</b>cert.issuer"
+	},
+	"cert.md5": {
+	    "content": "cert.md5",
+	    "title": "<b>(!)</b>cert.md5"
+	},
+	"cert.sha1": {
+	    "content": "cert.sha1",
+	    "title": "<b>(!)</b>cert.sha1"
+	},
+	"cert.sha256": {
+	    "content": "cert.sha256",
+	    "title": "<b>(!)</b>cert.sha256"
 	},
 	"sshkey.type": {
 	    "title": "<b>(!)</b>sshkey.type",
@@ -782,8 +873,8 @@ var HELP_TOPVALUES = {
 	    "content": "ike.vendor_ids.value",
 	    "title": "<b>(!)</b>ike.vendor_ids.value"
 	},
-	"httphdr:": {
-	    "title": "httphdr<b>(:[name])",
+	"httphdr": {
+	    "title": "httphdr<b>(:[name])</b>",
 	    "content": "Top HTTP header values seen",
 	},
 	"httphdr.name": {
@@ -794,30 +885,34 @@ var HELP_TOPVALUES = {
 	    "title": "httphdr.value",
 	    "content": "Top HTTP header values seen, regardless of the header name",
 	},
-	"useragent:": {
-	    "title": "<b>(!)<b>useragent<b>[:[value]]</b>",
+	"httpapp": {
+	    "title": "httpapp<b>(:[name])</b>",
+	    "content": "Top HTTP applications (and versions) seen",
+	},
+	"useragent": {
+	    "title": "<b>(!)<b>useragent<b>(:[value])</b>",
 	    "content": "Top HTTP User-Agent values seen."
 	},
-        "ja3-client:": {
-	    "title": "<b>(!)<b>ja3-client<b>[:[value]]</b>",
+	"ja3-client": {
+	    "title": "<b>(!)<b>ja3-client<b>(:[value])</b>",
 	    "content": "Top JA3 client values (MD5)."
-        },
-        "ja3-client.md5:": {
-	    "title": "<b>(!)<b>ja3-client.md5<b>[:[value]]</b>",
+	},
+	"ja3-client.md5": {
+	    "title": "<b>(!)<b>ja3-client.md5<b>(:[value])</b>",
 	    "content": "Top JA3 client values (MD5)."
-        },
-        "ja3-client.sha1:": {
-	    "title": "<b>(!)<b>ja3-client.sha1<b>[:[value]]</b>",
+	},
+	"ja3-client.sha1": {
+	    "title": "<b>(!)<b>ja3-client.sha1<b>(:[value])</b>",
 	    "content": "Top JA3 client values (SHA1)."
-        },
-        "ja3-client.sha256:": {
-	    "title": "<b>(!)<b>ja3-client.sha256<b>[:[value]]</b>",
+	},
+	"ja3-client.sha256": {
+	    "title": "<b>(!)<b>ja3-client.sha256<b>(:[value])</b>",
 	    "content": "Top JA3 client values (SHA256)."
-        },
-        "ja3-client.raw:": {
-	    "title": "<b>(!)<b>ja3-client.raw<b>[:[value]]</b>",
+	},
+	"ja3-client.raw": {
+	    "title": "<b>(!)<b>ja3-client.raw<b>(:[value])</b>",
 	    "content": "Top JA3 client values (raw fingerprint)."
-        },
+	},
     }
 };
 
@@ -1015,24 +1110,17 @@ var _SUBMENU_SORT = [
 var MENU_MAIN = {
     share: true,
     share_report: true,
+    share_compare: true,
+    share_jsonexport: true,
+    share_addrlist: true,
     items: [
 	{title: "HELP",
 	 action: "$scope.togglenotes('doc/usage/web-ui.html');",
 	 icon: "question-sign",
 	},
-    ]
-};
-
-// Menu for index.html
-var MENU_MAIN = {
-    share: true,
-    share_report: true,
-    share_compare: true,
-    share_jsonexport: true,
-    items: [
-	{title: "HELP",
-	 action: "$scope.togglenotes('doc/usage/web-ui.html');",
-	 icon: "question-sign",
+	{title: "Flow",
+	 action: "document.location = 'flow.html'",
+	 icon: "transfer",
 	},
     ]
 };

@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -17,29 +17,18 @@
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
 
-from __future__ import print_function
 import json
 import os
 from xml.sax import saxutils
-try:
-    from collections import OrderedDict
-except ImportError:
-    # fallback to dict for Python 2.6
-    OrderedDict = dict
+from collections import OrderedDict
 import sys
-try:
-    reload(sys)
-except NameError:
-    pass
-else:
-    sys.setdefaultencoding('utf-8')
 
 
-from future.utils import viewitems, viewvalues
-from past.builtins import basestring
-
-
-from ivre import utils, db, graphroute, config, xmlnmap
+from ivre.active.data import ALIASES_TABLE_ELEMS
+from ivre.config import HONEYD_IVRE_SCRIPTS_PATH
+from ivre.db import db
+from ivre import graphroute
+from ivre import utils
 
 
 HONEYD_ACTION_FROM_NMAP_STATE = {
@@ -70,7 +59,7 @@ def _getscript(port, sname):
 def _nmap_port2honeyd_action(port):
     if port['state_state'] == 'closed':
         return 'reset'
-    elif port['state_state'] != 'open':
+    if port['state_state'] != 'open':
         return 'block'
     # if 'service_tunnel' in port and port['service_tunnel'] == 'ssl':
     #     sslrelay = True
@@ -79,7 +68,7 @@ def _nmap_port2honeyd_action(port):
     if 'service_name' in port:
         if port['service_name'] == 'tcpwrapped':
             return '"true"'
-        elif port['service_name'] == 'ssh':
+        if port['service_name'] == 'ssh':
             s = _getscript(port, 'banner')
             if s is not None:
                 banner = s['output']
@@ -91,22 +80,22 @@ def _nmap_port2honeyd_action(port):
                               if k != 'SSH']),
                 )
             return '''"%s %s"''' % (
-                os.path.join(config.HONEYD_IVRE_SCRIPTS_PATH, 'sshd'),
+                os.path.join(HONEYD_IVRE_SCRIPTS_PATH, 'sshd'),
                 banner
             )
     return 'open'
 
 
 def _display_honeyd_conf(host, honeyd_routes, honeyd_entries, out=sys.stdout):
-    addr = utils.int2ip(host['addr'])
-    hname = "host_%s" % addr.replace('.', '_')
+    addr = host['addr']
+    hname = "host_%s" % addr.replace('.', '_').replace(':', '_')
     out.write("create %s\n" % hname)
     defaction = HONEYD_DEFAULT_ACTION
     if 'extraports' in host:
         extra = host['extraports']
         defaction = max(
-            max(viewvalues(extra),
-                key=lambda state: viewitems(state['total'])['reasons']),
+            max(extra.values(),
+                key=lambda state: state['total']),
             key=lambda reason: reason[1],
         )[0]
         defaction = HONEYD_ACTION_FROM_NMAP_STATE.get(defaction)
@@ -121,7 +110,7 @@ def _display_honeyd_conf(host, honeyd_routes, honeyd_entries, out=sys.stdout):
             # let's skip pseudo-port records that are only containers for host
             # scripts.
             pass
-    if 'traces' in host and len(host['traces']) > 0:
+    if host.get('traces'):
         trace = max(host['traces'], key=lambda x: len(x['hops']))['hops']
         if trace:
             trace.sort(key=lambda x: x['ttl'])
@@ -156,18 +145,14 @@ def _display_honeyd_conf(host, honeyd_routes, honeyd_entries, out=sys.stdout):
 
 def _display_honeyd_epilogue(honeyd_routes, honeyd_entries, out=sys.stdout):
     for r in honeyd_entries:
-        out.write('route entry %s\n' % utils.int2ip(r))
-        out.write('route %s link %s/32\n' % (utils.int2ip(r),
-                                             utils.int2ip(r)))
+        out.write('route entry %s\n' % r)
+        out.write('route %s link %s/32\n' % (r, r))
     out.write('\n')
     for r in honeyd_routes:
-        out.write('route %s link %s/32\n' % (utils.int2ip(r[0]),
-                                             utils.int2ip(r[1])))
+        out.write('route %s link %s/32\n' % (r[0], r[1]))
         for t in honeyd_routes[r]['targets']:
             out.write('route %s add net %s/32 %s latency %dms\n' % (
-                utils.int2ip(r[0]), utils.int2ip(t),
-                utils.int2ip(r[1]),
-                int(round(honeyd_routes[r]['mean'])),
+                r[0], t, r[1], int(round(honeyd_routes[r]['mean'])),
             ))
 
 
@@ -188,7 +173,7 @@ def _display_xml_scan(scan, out=sys.stdout):
               'scaninfo.numservices', 'scaninfo.services']:
         if k not in scan:
             scan[k] = ''
-        elif isinstance(scan[k], basestring):
+        elif isinstance(scan[k], str):
             scan[k] = scan[k].replace('"', '&quot;').replace('--', '-&#45;')
     out.write('<!DOCTYPE nmaprun PUBLIC '
               '"-//IDN nmap.org//DTD Nmap XML 1.04//EN" '
@@ -196,7 +181,7 @@ def _display_xml_scan(scan, out=sys.stdout):
               '<?xml-stylesheet '
               'href="file:///usr/local/bin/../share/nmap/nmap.xsl" '
               'type="text/xsl"?>\n'
-              '<!-- Nmap %(version)s scan initiated %(startstr)s '
+              '<!-- %(scanner)s %(version)s scan initiated %(startstr)s '
               'as: %(args)s -->\n'
               '<nmaprun scanner="%(scanner)s" args="%(args)s" '
               'start="%(start)s" startstr="%(startstr)s" '
@@ -222,7 +207,7 @@ def _display_xml_table_elem(doc, first=False, name=None, out=sys.stdout):
     elif isinstance(doc, dict):
         if not first:
             out.write('<table%s>\n' % name)
-        for key, subdoc in viewitems(doc):
+        for key, subdoc in doc.items():
             _display_xml_table_elem(subdoc, name=key, out=out)
         if not first:
             out.write('</table>\n')
@@ -238,7 +223,7 @@ def _display_xml_script(s, out=sys.stdout):
     out.write('<script id=%s' % saxutils.quoteattr(s['id']))
     if 'output' in s:
         out.write(' output=%s' % saxutils.quoteattr(s['output']))
-    key = xmlnmap.ALIASES_TABLE_ELEMS.get(s['id'], s['id'])
+    key = ALIASES_TABLE_ELEMS.get(s['id'], s['id'])
     if key in s:
         out.write('>')
         _display_xml_table_elem(s[key], first=True, out=out)
@@ -265,10 +250,25 @@ def _display_xml_host(h, out=sys.stdout):
         out.write('/>')
     out.write('\n')
     if 'addr' in h:
-        out.write('<address addr="%s" addrtype="ipv4"/>\n' % h['addr'])
-    for t in h.get('addresses', []):
-        for a in h['addresses'][t]:
-            out.write('<address addr="%s" addrtype="%s"/>\n' % (a, t))
+        out.write('<address addr="%s" addrtype="ipv%d"/>\n' % (
+            h['addr'],
+            6 if ':' in h['addr'] else 4,
+        ))
+    for atype, addrs in h.get('addresses', {}).items():
+        for addr in addrs:
+            extra = ""
+            if atype == "mac":
+                manuf = utils.mac2manuf(addr)
+                # if manuf:
+                #     if len(manuf) > 1 and manuf[1]:
+                #         manuf = manuf[1]
+                #     else:
+                #         manuf = manuf[0]
+                #     extra = ' vendor=%s' % saxutils.quoteattr(manuf[0])
+                if manuf and manuf[0]:
+                    extra = ' vendor=%s' % saxutils.quoteattr(manuf[0])
+            out.write('<address addr="%s" addrtype="%s"%s/>\n' % (addr, atype,
+                                                                  extra))
     if 'hostnames' in h:
         out.write('<hostnames>\n')
         for hostname in h['hostnames']:
@@ -279,11 +279,11 @@ def _display_xml_host(h, out=sys.stdout):
             out.write('/>\n')
         out.write('</hostnames>\n')
     out.write('<ports>')
-    for state, counts in viewitems(h.get('extraports', {})):
+    for state, counts in h.get('extraports', {}).items():
         out.write('<extraports state="%s" count="%d">\n' % (
             state, counts['total']
         ))
-        for reason, count in viewitems(counts['reasons']):
+        for reason, count in counts['reasons'].items():
             out.write('<extrareasons reason="%s" count="%d"/>\n' % (
                 reason, count
             ))
@@ -309,7 +309,7 @@ def _display_xml_host(h, out=sys.stdout):
                       'ostype', 'method', 'conf']:
                 kk = "service_%s" % k
                 if kk in p:
-                    if isinstance(p[kk], basestring):
+                    if isinstance(p[kk], str):
                         out.write(' %s=%s' % (
                             k, saxutils.quoteattr(p[kk])
                         ))
@@ -341,9 +341,7 @@ def _display_xml_host(h, out=sys.stdout):
                     saxutils.quoteattr(str(hop['ttl']))
                 ))
             if 'ipaddr' in hop:
-                out.write(' ipaddr=%s' % (
-                    saxutils.quoteattr(utils.int2ip(hop['ipaddr']))
-                ))
+                out.write(' ipaddr=%s' % (saxutils.quoteattr(hop['ipaddr'])))
             if 'rtt' in hop:
                 out.write(' rtt=%s' % (
                     saxutils.quoteattr('%.2f' % hop['rtt']
@@ -377,7 +375,7 @@ def _display_gnmap_scan(scan, out=sys.stdout):
     for k in ['version', 'startstr', 'args']:
         if k not in scan:
             scan[k] = ''
-        elif isinstance(scan[k], basestring):
+        elif isinstance(scan[k], str):
             scan[k] = scan[k].replace('"', '&quot;').replace('--', '-&#45;')
     out.write('# Nmap %(version)s scan initiated %(startstr)s as: %(args)s\n')
 
@@ -420,7 +418,7 @@ def _display_gnmap_host(host, out=sys.stdout):
     if ports:
         info.append('Ports: %s' % ', '.join(ports))
     extraports = []
-    for state, counts in viewitems(host.get('extraports', {})):
+    for state, counts in host.get('extraports', {}).items():
         extraports.append('%s (%d)' % (state, counts['total']))
     if extraports:
         info.append('Ignored State: %s' % ', '.join(extraports))
@@ -447,9 +445,9 @@ def displayfunction_honeyd(cur):
     _display_honeyd_epilogue(honeyd_routes, honeyd_entries, sys.stdout)
 
 
-def displayfunction_nmapxml(cur):
+def displayfunction_nmapxml(cur, scan=None):
     _display_xml_preamble(out=sys.stdout)
-    _display_xml_scan({}, out=sys.stdout)
+    _display_xml_scan(scan or {}, out=sys.stdout)
     for h in cur:
         _display_xml_host(h, out=sys.stdout)
     _display_xml_epilogue(out=sys.stdout)
@@ -461,13 +459,12 @@ def displayfunction_gnmap(cur):
         _display_gnmap_host(h, out=sys.stdout)
 
 
-def displayfunction_explain(flt, db):
-    sys.stdout.write(db.explain(db._get(flt), indent=4) + '\n')
+def displayfunction_explain(flt, dbase):
+    sys.stdout.write(dbase.explain(dbase._get(flt), indent=4) + '\n')
 
 
-def displayfunction_remove(cur, db):
-    for h in cur:
-        db.remove(h)
+def displayfunction_remove(flt, dbase):
+    dbase.remove_many(flt)
 
 
 def displayfunction_graphroute(cur, arg, gr_include, gr_dont_reset):
@@ -479,16 +476,16 @@ def displayfunction_graphroute(cur, arg, gr_include, gr_dont_reset):
     if arg == "dot":
         if arg == "AS":
             def cluster(ipaddr):
-                res = db.db.data.as_byip(ipaddr)
+                res = db.data.as_byip(ipaddr)
                 if res is None:
-                    return
+                    return None
                 return (res['as_num'],
                         "%(as_num)d\n[%(as_name)s]" % res)
         elif arg == "Country":
             def cluster(ipaddr):
-                res = db.db.data.country_byip(ipaddr)
+                res = db.data.country_byip(ipaddr)
                 if res is None:
-                    return
+                    return None
                 return (res['country_code'],
                         "%(country_code)s - %(country_name)s" % res)
         else:
@@ -501,21 +498,21 @@ def displayfunction_graphroute(cur, arg, gr_include, gr_dont_reset):
             reset_world=not gr_dont_reset
         )
         for n in entry_nodes:
-            g.glow(utils.int2ip(n))
+            g.glow(n)
 
 
 def displayfunction_csv(cur, arg, csv_sep, csv_na_str, add_infos):
     fields = {
         "ports": OrderedDict([
-            ["addr", utils.int2ip],
+            ["addr", True],
             ["ports", OrderedDict([
                 ["port", str],
                 ["state_state", True]])]]),
         "hops": OrderedDict([
-            ["addr", utils.int2ip],
+            ["addr", True],
             ["traces", OrderedDict([
                 ["hops", OrderedDict([
-                    ["ipaddr", utils.int2ip],
+                    ["ipaddr", True],
                     ["ttl", str],
                     ["rtt", lambda x: (csv_na_str if x == '--'
                                        else str(x))],
@@ -523,7 +520,7 @@ def displayfunction_csv(cur, arg, csv_sep, csv_na_str, add_infos):
             ])]
         ]),
         "rtt": OrderedDict([
-            ["addr", utils.int2ip],
+            ["addr", True],
             ["traces", OrderedDict([
                 ["hops", OrderedDict([
                     ["rtt", lambda x: (csv_na_str if x == '--'
@@ -548,7 +545,7 @@ def displayfunction_csv(cur, arg, csv_sep, csv_na_str, add_infos):
         _displayhost_csv(fields, csv_sep, csv_na_str, h, out=sys.stdout)
 
 
-def displayfunction_json(cur, db, no_screenshots=False):
+def displayfunction_json(cur, dbase, no_screenshots=False):
     if os.isatty(sys.stdout.fileno()):
         indent = 4
     else:
@@ -566,24 +563,24 @@ def displayfunction_json(cur, db, no_screenshots=False):
                         del port[fname]
             elif 'screendata' in port:
                 port['screendata'] = utils.encode_b64(
-                    db.from_binary(port['screendata'])
+                    dbase.from_binary(port['screendata'])
                 )
             for script in port.get('scripts', []):
                 if 'masscan' in script and 'raw' in script['masscan']:
                     script['masscan']['raw'] = utils.encode_b64(
-                        db.from_binary(
+                        dbase.from_binary(
                             script['masscan']['raw']
                         )
                     )
         print(json.dumps(h, indent=indent,
-                         default=db.serialize))
+                         default=dbase.serialize))
 
 
-def display_short(db, flt, srt, lmt, skp):
-    for val in db.distinct("addr", flt=flt, sort=srt, limit=lmt, skip=skp):
-        sys.stdout.write(db.internal2ip(val) + '\n')
+def display_short(dbase, flt, srt, lmt, skp):
+    for val in dbase.distinct("addr", flt=flt, sort=srt, limit=lmt, skip=skp):
+        sys.stdout.write(val + '\n')
 
 
-def display_distinct(db, arg, flt, srt, lmt, skp):
-    for val in db.distinct(arg, flt=flt, sort=srt, limit=lmt, skip=skp):
+def display_distinct(dbase, arg, flt, srt, lmt, skp):
+    for val in dbase.distinct(arg, flt=flt, sort=srt, limit=lmt, skip=skp):
         sys.stdout.write(str(val) + '\n')

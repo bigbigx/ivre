@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2017 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -20,12 +20,22 @@
 """IVRE command line"""
 
 
-import sys
+from errno import EPIPE
 import os
+import sys
+import warnings
 
 
-from ivre import utils, tools
-from ivre.tools.version import main as version
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# because some "dev" of the cryptography module decided that
+# CryptographyDeprecationWarning should **not** inherit from
+# DeprecationWarning
+warnings.filterwarnings("ignore", message='^Python [0-9\\.]+ .*support',
+                        module='cryptography|OpenSSL')
+
+
+from ivre import utils, tools  # noqa: E402
+from ivre.tools.version import main as version  # noqa: E402
 
 
 HELP_COMMANDS = ["-h", "--help", "h", "help"]
@@ -53,7 +63,7 @@ def main():
                     "--help"] + sys.argv[2:]
     possible_commands = tools.guess_command(command)
     if len(possible_commands) == 1:
-        tools.get_command(possible_commands[0])()
+        tools.get_command(next(iter(possible_commands)))()
     elif command in tools.ALIASES:
         tools.get_command(tools.ALIASES[command])()
     elif command in VERSION_COMMANDS:
@@ -72,13 +82,17 @@ def main():
         output.write("usage: %s [COMMAND]\n\n" % executable)
         output.write("%s commands:\n" % ("matching" if possible_commands
                                          else "available"))
-        for availcmd in (possible_commands if possible_commands
-                         else tools.__all__):
+        for availcmd in sorted(possible_commands if possible_commands
+                               else tools.__all__):
             output.write("  %s\n" % availcmd)
         output.write("\n")
         output.write("Try %s help [COMMAND]\n\n" % executable)
-        exit(retcode)
+        sys.exit(retcode)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except IOError as exc:
+        if exc.errno != EPIPE:
+            raise

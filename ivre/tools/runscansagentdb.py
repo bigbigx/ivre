@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -20,14 +20,11 @@
 """Manage scans run on remote agents."""
 
 
-from __future__ import print_function
+import argparse
 import os
 import signal
 import sys
 import time
-
-
-from builtins import input
 
 
 import ivre.target
@@ -105,20 +102,10 @@ WANT_DOWN = False
 
 
 def main():
-    try:
-        import argparse
-        parser = argparse.ArgumentParser(
-            description=__doc__,
-            parents=[ivre.target.ARGPARSER])
-    except ImportError:
-        import optparse
-        parser = optparse.OptionParser(
-            description=__doc__)
-        for args, kargs in ivre.target.ARGPARSER.args:
-            parser.add_option(*args, **kargs)
-        parser.parse_args_orig = parser.parse_args
-        parser.parse_args = lambda: parser.parse_args_orig()[0]
-        parser.add_argument = parser.add_option
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        parents=[ivre.target.ARGPARSER],
+    )
     parser.add_argument(
         '--assign-free-agents', action="store_true",
         help="Assign any agent available (only useful when specifying"
@@ -251,7 +238,7 @@ def main():
         def terminate_now(signum, _):
             ivre.utils.LOGGER.info('shutdown: got signal %d, halting now.',
                                    signum)
-            exit()
+            sys.exit(0)
         signal.signal(signal.SIGINT, terminate)
         signal.signal(signal.SIGTERM, terminate)
 

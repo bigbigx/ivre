@@ -1,6 +1,6 @@
 /*
  * This file is part of IVRE.
- * Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+ * Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
  *
  * IVRE is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
@@ -148,6 +148,11 @@ var GraphTopValues = (function(_super) {
 			    return 'setparam(FILTER, "open", "' + x.map(function(x) {return x.join('/');}).join(',') + '", true, true); setparam(FILTER, "countports", "' + x.length + '", true);';
 		    };
 	    }
+	    else if(field === "net" || field.substr(0, 4) === "net:") {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "' + x + '")';
+		};
+	    }
 	    else if(['cert.issuer', 'cert.subject'].indexOf(field) !== -1)
 		prepareoutput = function(x) {
 		    var attributes = {
@@ -168,6 +173,11 @@ var GraphTopValues = (function(_super) {
 		    }
 		    return result.join('/');
 		};
+	    else if(['cert.md5', 'cert.sha1', 'cert.sha256'].indexOf(field) !== -1) {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "' + field + '", "' + x + '")';
+		};
+	    }
 	    else if(field === 'asnum') {
 		preparefilter = function(x) {
 		    return 'setparam(FILTER, "asnum", "' + x + '", true);';
@@ -294,12 +304,12 @@ var GraphTopValues = (function(_super) {
 		};
 		if(field[7] === ':') {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "service", "' + x + ':' + field.substr(8) + '");';
+			return 'setparam(FILTER, "service", "' + (x || "-") + ':' + field.substr(8) + '");';
 		    };
 		}
 		else {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "service", "' + x + '");';
+			return 'setparam(FILTER, "service", "' + (x || "-") + '");';
 		    };
 		}
 	    }
@@ -312,12 +322,17 @@ var GraphTopValues = (function(_super) {
 		};
 		if(field[7] === ':' && field.substr(8) % 1 === 0) {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "product", "' + x[0] + ':' + x[1] + field.substr(7) + '");';
+			return (
+			    'setparam(FILTER, "product", "' + (x[0] || "-") +
+				':' + (x[1] || "-") + field.substr(7) + '");'
+			);
 		    };
 		}
 		else {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "product", "' + x[0] + ':' + x[1] + '");';
+			return (
+			    'setparam(FILTER, "product", "' + (x[0] || "-") +
+				':' + (x[1] || "-") + '");');
 		    };
 		}
 	    }
@@ -332,12 +347,20 @@ var GraphTopValues = (function(_super) {
 		};
 		if(field[7] === ':' && field.substr(8) % 1 === 0) {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "version", "' + x[0] + ':' + x[1] + ':' + x[2] + field.substr(7) + '");';
+			return (
+			    'setparam(FILTER, "version", "' + (x[0] || "-") +
+				':' + (x[1] || "-") + ':' + (x[2] || "-") +
+				field.substr(7) + '");'
+			);
 		    };
 		}
 		else {
 		    preparefilter = function(x) {
-			return 'setparam(FILTER, "version", "' + x[0] + ':' + x[1] + ':' + x[2] + '");';
+			return (
+			    'setparam(FILTER, "version", "' + (x[0] || "-") +
+				':' + (x[1] || "-") + ':' + (x[2] || "-") +
+				'");'
+			);
 		    };
 		}
 	    }

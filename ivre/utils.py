@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2018 Pierre LALET <pierre.lalet@cea.fr>
+# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -25,12 +25,7 @@ sub-module or script.
 
 
 import ast
-try:
-    import argparse
-    USE_ARGPARSE = True
-except ImportError:
-    import optparse
-    USE_ARGPARSE = False
+import argparse
 from bisect import bisect_left
 import bz2
 import codecs
@@ -49,18 +44,25 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import time
+
+
+try:
+    from OpenSSL import crypto as osslc
+    from cryptography.hazmat.primitives.serialization import \
+        Encoding, PublicFormat
+except ImportError:
+    USE_PYOPENSSL = False
+else:
+    USE_PYOPENSSL = True
 try:
     import PIL.Image
     import PIL.ImageChops
-    USE_PIL = True
 except ImportError:
     USE_PIL = False
-
-
-from builtins import bytes, int as int_types, object, range, str
-from future.utils import PY3, viewitems, viewvalues
-from past.builtins import basestring
+else:
+    USE_PIL = True
 
 
 from ivre import config
@@ -77,9 +79,11 @@ from ivre import config
 # seen, it seems that (1) is right.
 MAXVALLEN = 1000
 
+
 LOGGER = logging.getLogger("ivre")
 REGEXP_T = type(re.compile(''))
 HEX = re.compile('^[a-f0-9]+$', re.IGNORECASE)
+STRPTIME_SUPPORTS_TZ = (sys.version_info >= (3, 7))
 
 
 # IP address regexp, based on
@@ -154,13 +158,13 @@ IPV4ADDR = re.compile(
 )
 
 NMAP_FINGERPRINT_IVRE_KEY = {
-    # TODO: cpe
     'd': 'service_devicetype',
     'h': 'service_hostname',
     'i': 'service_extrainfo',
     'o': 'service_ostype',
     'p': 'service_product',
     'v': 'service_version',
+    'cpe': 'cpe',
 }
 
 logging.basicConfig()
@@ -201,8 +205,6 @@ def int2ip(ipint):
 
     """
     try:
-        if ipint > 0xffffffff:  # Python 2.6 would handle the overflow
-            raise struct.error()
         return socket.inet_ntoa(struct.pack('!I', ipint))
     except struct.error:
         return socket.inet_ntop(
@@ -453,8 +455,7 @@ def regexp2pattern(string):
         else:
             string += patterns[2]
         return string, flags
-    else:
-        return re.escape(string), re.UNICODE if isinstance(string, str) else 0
+    return re.escape(string), re.UNICODE if isinstance(string, str) else 0
 
 
 def str2list(string):
@@ -534,15 +535,17 @@ def all2datetime(arg):
     """
     if isinstance(arg, datetime.datetime):
         return arg
-    if isinstance(arg, basestring):
-        try:
-            return datetime.datetime.strptime(arg, '%Y-%m-%d %H:%M:%S')
-        except ValueError:
-            return datetime.datetime.strptime(arg, '%Y-%m-%d %H:%M:%S.%f')
-    if isinstance(arg, int_types) or isinstance(arg, float):
+    if isinstance(arg, str):
+        for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f',
+                    '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f']:
+            try:
+                return datetime.datetime.strptime(arg, fmt)
+            except ValueError:
+                pass
+        raise ValueError('time data %r does not match standard formats' % arg)
+    if isinstance(arg, (int, float)):
         return datetime.datetime.fromtimestamp(arg)
-    else:
-        raise TypeError("%s is of unknown type." % repr(arg))
+    raise TypeError("%s is of unknown type." % repr(arg))
 
 
 def makedirs(dirname):
@@ -574,8 +577,7 @@ def isfinal(elt):
     that does not contain other elements)
 
     """
-    return isinstance(elt, (basestring, int_types, float, datetime.datetime,
-                            REGEXP_T))
+    return isinstance(elt, (str, int, float, datetime.datetime, REGEXP_T))
 
 
 def diff(doc1, doc2):
@@ -597,7 +599,7 @@ def diff(doc1, doc2):
         if key in ['categories']:
             set1 = set(doc1[key])
             set2 = set(doc2[key])
-            res[key] = [s for s in set1.symmetric_difference(set2)]
+            res[key] = list(set1.symmetric_difference(set2))
             if not res[key]:
                 del res[key]
             continue
@@ -626,7 +628,7 @@ def fields2csv_head(fields, prefix=''):
 
     """
     line = []
-    for field, subfields in viewitems(fields):
+    for field, subfields in fields.items():
         if subfields is True or callable(subfields):
             line.append(prefix + field)
         elif isinstance(subfields, dict):
@@ -641,7 +643,7 @@ def doc2csv(doc, fields, nastr="NA"):
 
     """
     lines = [[]]
-    for field, subfields in viewitems(fields):
+    for field, subfields in fields.items():
         if subfields is True:
             value = doc.get(field)
             if isinstance(value, list):
@@ -683,7 +685,7 @@ def doc2csv(doc, fields, nastr="NA"):
     return lines
 
 
-class FileOpener(object):
+class FileOpener:
     """A file-like object, working with gzip or bzip2 compressed files.
 
     Uses subprocess.Popen() to call zcat or bzcat by default (much
@@ -691,13 +693,12 @@ class FileOpener(object):
 
     """
     FILE_OPENERS_MAGIC = {
-        b"\x1f\x8b": (config.GZ_CMD, gzip.open),
-        b"BZ": (config.BZ2_CMD, bz2.BZ2File),
+        b"\x1f\x8b": gzip.open,
+        b"BZ": bz2.BZ2File,
     }
 
     def __init__(self, fname):
-        self.proc = None
-        if not isinstance(fname, basestring):
+        if not isinstance(fname, str):
             self.fdesc = fname
             self.needsclose = False
             return
@@ -705,27 +706,18 @@ class FileOpener(object):
         with open(fname, 'rb') as fdesc:
             magic = fdesc.read(2)
         try:
-            cmd_opener, py_opener = self.FILE_OPENERS_MAGIC[magic]
+            py_opener = self.FILE_OPENERS_MAGIC[magic]
         except KeyError:
             # Not a compressed file
             self.fdesc = open(fname, 'rb')
             return
-        try:
-            # By default we try to use zcat / bzcat, since they seem to be
-            # (a lot) faster
-            self.proc = subprocess.Popen([cmd_opener, fname],
-                                         stdout=subprocess.PIPE,
-                                         stderr=open(os.devnull, 'w'))
-            self.fdesc = self.proc.stdout
-            return
-        except OSError as exc:
-            if exc.errno != errno.ENOENT:
-                raise
-        # Fallback to the appropriate python opener
         self.fdesc = py_opener(fname)
 
     def read(self, *args):
         return self.fdesc.read(*args)
+
+    def readline(self):
+        return self.fdesc.readline()
 
     def fileno(self):
         return self.fdesc.fileno()
@@ -734,8 +726,6 @@ class FileOpener(object):
         # since .close() is explicitly called, we close self.fdesc
         # even when self.close is False.
         self.fdesc.close()
-        if self.proc is not None:
-            self.proc.wait()
 
     def __enter__(self):
         return self
@@ -743,8 +733,6 @@ class FileOpener(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.needsclose:
             self.fdesc.close()
-        if self.proc is not None:
-            self.proc.wait()
 
     def __iter__(self):
         return self
@@ -757,31 +745,13 @@ def open_file(fname):
     return FileOpener(fname)
 
 
-_HASH_COMMANDS = {
-    'md5': config.MD5_CMD,
-    'sha1': config.SHA1_CMD,
-    'sha256': config.SHA256_CMD,
-}
-
-
 def hash_file(fname, hashtype="sha1"):
     """Compute a hash of data from a given file"""
     with open_file(fname) as fdesc:
-        if hashtype in _HASH_COMMANDS:
-            try:
-                # By default we try to use {md5,sha1,sha256}sum
-                # command, since they seem to be (a lot) faster
-                return subprocess.Popen(
-                    [_HASH_COMMANDS[hashtype]], stdin=fdesc,
-                    stdout=subprocess.PIPE, stderr=open(os.devnull, 'w')
-                ).communicate()[0].split()[0]
-            except OSError as exc:
-                if exc.errno != errno.ENOENT:
-                    raise
         result = hashlib.new(hashtype)
-        for data in iter(lambda: fdesc.read(1048576), ""):
+        for data in iter(lambda: fdesc.read(1048576), b""):
             result.update(data)
-        return result.hexdigest()
+        return result.hexdigest().encode()
 
 
 def serialize(obj):
@@ -808,10 +778,7 @@ config.DEBUG_DB) is True.
     MAX_WARNINGS_STORED = 100
 
     def __init__(self):
-        # Python 2.6: logging.Filter is an old-style class, super()
-        # cannot be used.
-        # super(LogFilter, self).__init__()
-        logging.Filter.__init__(self)
+        super(LogFilter, self).__init__()
         self.warnings = set()
 
     def filter(self, record):
@@ -834,62 +801,7 @@ LOGGER.addFilter(LogFilter())
 LOGGER.setLevel(1 if config.DEBUG or config.DEBUG_DB else 20)
 
 
-if USE_ARGPARSE:
-    def ArgparserParent():
-        return argparse.ArgumentParser(add_help=False)
-else:
-    class ArgparserParent(object):
-        """This is a stub to implement a parent-like behavior when
-        optparse has to be used.
-
-        """
-
-        def __init__(self):
-            self.args = []
-
-        def add_argument(self, *args, **kargs):
-            """Stores parent's arguments for latter (manual)
-            processing.
-
-            """
-            self.args.append((args, kargs))
-
-
-def create_argparser(description, extraargs=None):
-    """This function helps create a parser with either argparse (if it is
-    available) or optparse. This pattern exists because argparse does
-    not exist by default in Python 2.6.
-
-    `description` is used as the description argument of
-    argparse.ArgumentParser() or optparse.OptionParser().
-
-    This function returns a tuple corresponding to the parser and a
-    boolean (True iff argparse is used).
-
-    """
-    if USE_ARGPARSE:
-        return argparse.ArgumentParser(description=__doc__), True
-    parser = optparse.OptionParser(description=__doc__)
-    parser.parse_args_orig = parser.parse_args
-
-    def my_parse_args():
-        res = parser.parse_args_orig()
-        if extraargs is None:
-            if res[1]:
-                raise optparse.OptionError(
-                    'unrecognized arguments', res[1]
-                )
-        else:
-            res = parser.parse_args_orig()
-            res[0].ensure_value(extraargs, res[1])
-            return res[0]
-
-    parser.parse_args = my_parse_args
-    parser.add_argument = parser.add_option
-    return parser, False
-
-
-CLI_ARGPARSER = ArgparserParent()
+CLI_ARGPARSER = argparse.ArgumentParser(add_help=False)
 # DB
 CLI_ARGPARSER.add_argument('--init', '--purgedb', action='store_true',
                            help='Purge or create and initialize the database.')
@@ -914,14 +826,9 @@ CLI_ARGPARSER.add_argument('--distinct', metavar='FIELD',
                            'results, one per line.')
 CLI_ARGPARSER.add_argument('--json', action='store_true',
                            help='Output results as JSON documents.')
-if USE_ARGPARSE:
-    CLI_ARGPARSER.add_argument('--sort', metavar='FIELD / ~FIELD', nargs='+',
-                               help='Sort results according to FIELD; use '
-                               '~FIELD to reverse sort order.')
-else:
-    CLI_ARGPARSER.add_argument('--sort', metavar='FIELD / ~FIELD',
-                               help='Sort results according to FIELD; use '
-                               '~FIELD to reverse sort order.')
+CLI_ARGPARSER.add_argument('--sort', metavar='FIELD / ~FIELD', nargs='+',
+                           help='Sort results according to FIELD; use '
+                           '~FIELD to reverse sort order.')
 CLI_ARGPARSER.add_argument('--limit', type=int,
                            help='Ouput at most LIMIT results.')
 CLI_ARGPARSER.add_argument('--skip', type=int, help='Skip first SKIP results.')
@@ -929,13 +836,13 @@ CLI_ARGPARSER.add_argument('--skip', type=int, help='Skip first SKIP results.')
 
 # Country aliases:
 #   - UK: GB
-#   - EU: 28 EU member states, + EU itself, for historical reasons
+#   - EU: 27 EU member states, + EU itself, for historical reasons
 COUNTRY_ALIASES = {
     "UK": "GB",
     "EU": [
         "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR",
         "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
-        "SI", "ES", "SE", "GB",
+        "SI", "ES", "SE",
         "EU",
     ],
 }
@@ -955,7 +862,7 @@ def country_unalias(country):
         previous Maxmind GeoIP databases.
 
     """
-    if isinstance(country, basestring):
+    if isinstance(country, str):
         return COUNTRY_ALIASES.get(country, country)
     if hasattr(country, '__iter__'):
         return functools.reduce(
@@ -981,6 +888,10 @@ def screenwords(imgdata):
             if size == 0:
                 break
             for word in line.split():
+                try:
+                    word = word.decode()
+                except UnicodeDecodeError:
+                    continue
                 if word not in words:
                     if len(word) <= size:
                         words.add(word)
@@ -995,6 +906,7 @@ def screenwords(imgdata):
                         break
         if result:
             return result
+    return None
 
 
 if USE_PIL:
@@ -1018,7 +930,7 @@ if USE_PIL:
             bbox = diffbkg.getbbox()
             if not bbox:
                 # Image no longer exists after trim
-                return
+                return None
             if result is None:
                 result = bbox
             elif _img_size(bbox) < _img_size(result):
@@ -1092,8 +1004,8 @@ def _set_ports():
                 continue
             _PORTS.setdefault(proto, {})[port] = freq
         fdesc.close()
-    for proto, entry in viewitems(config.KNOWN_PORTS):
-        for port, proba in viewitems(entry):
+    for proto, entry in config.KNOWN_PORTS.items():
+        for port, proba in entry.items():
             _PORTS.setdefault(proto, {})[port] = proba
     _PORTS_POPULATED = True
 
@@ -1116,22 +1028,28 @@ def guess_srv_port(port1, port2, proto="tcp"):
 _NMAP_PROBES = {}
 _NMAP_PROBES_POPULATED = False
 _NMAP_CUR_PROBE = None
+_NAMP_CUR_FALLBACK = None
 
 
 def _read_nmap_probes():
-    global _NMAP_CUR_PROBE, _NMAP_PROBES_POPULATED
+    global _NMAP_CUR_PROBE, _NMAP_CUR_FALLBACK, _NMAP_PROBES_POPULATED
     _NMAP_CUR_PROBE = None
+    _NMAP_CUR_FALLBACK = None
 
     def parse_line(line):
-        global _NMAP_PROBES, _NMAP_CUR_PROBE
+        global _NMAP_PROBES, _NMAP_CUR_PROBE, _NMAP_CUR_FALLBACK
         if line.startswith(b'match '):
             line = line[6:]
             soft = False
         elif line.startswith(b'softmatch '):
             line = line[10:]
             soft = True
+        elif line.startswith(b'fallback '):
+            _NMAP_CUR_FALLBACK.append(line[9:].decode())
+            return
         elif line.startswith(b'Probe '):
             _NMAP_CUR_PROBE = []
+            _NMAP_CUR_FALLBACK = []
             proto, name, probe = line[6:].split(b' ', 2)
             if not (len(probe) >= 3 and probe[:2] == b'q|' and
                     probe[-1:] == b'|'):
@@ -1141,7 +1059,8 @@ def _read_nmap_probes():
                                          arbitrary_escapes=True)
             _NMAP_PROBES.setdefault(proto.lower().decode(),
                                     {})[name.decode()] = {
-                "probe": probe, "fp": _NMAP_CUR_PROBE
+                "probe": probe, "fp": _NMAP_CUR_PROBE,
+                "fallbacks": _NMAP_CUR_FALLBACK,
             }
             return
         else:
@@ -1184,18 +1103,21 @@ def _read_nmap_probes():
                     value = value.decode('utf-8')
                 except UnicodeDecodeError:
                     value = repr(value)
-            info[key] = (value, flag)
+            if key == 'cpe':
+                info.setdefault(key, []).append(value)
+            else:
+                info[key] = (value, flag)
             data = data.lstrip(b' ')
         _NMAP_CUR_PROBE.append((service.decode(), info))
     try:
         with open(os.path.join(config.NMAP_SHARE_PATH, 'nmap-service-probes'),
                   'rb') as fdesc:
-            for line in fdesc:
-                parse_line(line[:-1])
+            for fline in fdesc:
+                parse_line(fline[:-1])
     except (AttributeError, TypeError, IOError):
         LOGGER.warning('Cannot read Nmap service fingerprint file.',
                        exc_info=True)
-    del _NMAP_CUR_PROBE
+    del _NMAP_CUR_PROBE, _NMAP_CUR_FALLBACK
     _NMAP_PROBES_POPULATED = True
 
 
@@ -1206,32 +1128,155 @@ def get_nmap_svc_fp(proto="tcp", probe="NULL"):
     return _NMAP_PROBES[proto][probe]
 
 
-def match_nmap_svc_fp(output, proto="tcp", probe="NULL"):
+def get_nmap_probes(proto):
+    if not _NMAP_PROBES_POPULATED:
+        _read_nmap_probes()
+    return {value['probe']: name
+            for name, value in _NMAP_PROBES[proto].items()}
+
+
+def match_nmap_svc_fp(output, proto="tcp", probe="NULL", soft=False):
     """Take output from a given probe and return the closest nmap
     fingerprint."""
     softmatch = {}
     result = {}
     try:
-        fingerprints = get_nmap_svc_fp(
+        probe_data = get_nmap_svc_fp(
             proto=proto,
             probe=probe,
-        )['fp']
+        )
+        fingerprints = probe_data['fp']
     except KeyError:
         pass
     else:
+        fallbacks = probe_data.get('fallbacks')
         for service, fingerprint in fingerprints:
             match = fingerprint['m'][0].search(output)
             if match is not None:
+                if probe == 'NULL' and service == 'landesk-rc':
+                    # This Nmap fingerprint sucks: it is just a size
+                    # check with a simple rule to exclude values
+                    # starting with HTTP, RTSP or SIP. This gives too
+                    # many false positive matches. According to a
+                    # comment, the values are supposed to be
+                    # random. Let's at least make sure it contains
+                    # enough different chars.
+                    if len(set(output)) < 100:
+                        continue
                 doc = softmatch if fingerprint['soft'] else result
-                doc['service_name'] = service
-                for elt, key in viewitems(NMAP_FINGERPRINT_IVRE_KEY):
+                if service.startswith('ssl/'):
+                    doc['service_name'] = service[4:]
+                    doc['service_tunnel'] = 'ssl'
+                else:
+                    doc['service_name'] = service
+                for elt, key in NMAP_FINGERPRINT_IVRE_KEY.items():
                     if elt in fingerprint:
-                        doc[key] = nmap_svc_fp_format_data(
-                            fingerprint[elt][0], match
-                        )
+                        if elt == 'cpe':
+                            data = [
+                                'cpe:/%s' %
+                                nmap_svc_fp_format_data(value, match)
+                                for value in fingerprint[elt]
+                            ]
+                        else:
+                            data = nmap_svc_fp_format_data(
+                                fingerprint[elt][0], match
+                            )
+                        if data:
+                            doc[key] = data
                 if not fingerprint['soft']:
                     return result
+        if fallbacks:
+            for fallback in fallbacks:
+                # Hack: in Nmap fingerprint file, nothing specifies
+                # the protocol of the fallback probe. However, the
+                # same probe may exist with different
+                # protcols. Usually, the fallback probes use the same
+                # protocol than the original probe; the only
+                # exceptions so far are DNSStatusRequestTCP (fallback
+                # DNSStatusRequest) and DNSVersionBindReqTCP (fallback
+                # DNSVersionBindReq)
+                if proto == 'tcp' and fallback + 'TCP' == probe:
+                    fallback_result = match_nmap_svc_fp(output, proto='udp',
+                                                        probe=fallback,
+                                                        soft=soft)
+                else:
+                    fallback_result = match_nmap_svc_fp(output, proto=proto,
+                                                        probe=fallback,
+                                                        soft=soft)
+                if fallback_result.get('soft'):
+                    softmatch = fallback_result
+                else:
+                    return fallback_result
+    if softmatch and soft:
+        return dict(softmatch, soft=True)
     return softmatch
+
+
+_NMAP_PAYLOADS = {}
+_NMAP_PAYLOADS_POPULATED = False
+
+
+def _read_nmap_payloads():
+    global _NMAP_PAYLOADS_POPULATED
+
+    def _parse_line(line):
+        status = 0
+        for c in line:
+            if status == 0:
+                if c in {'#', '\r', '\n'}:
+                    return
+                yield c
+                if c == '"':
+                    status = 1
+            elif status == 1:
+                if c in {'\r', '\n'}:
+                    LOGGER.warning('Unexpected EOL while reading line %r',
+                                   line)
+                    return
+                yield c
+                if c == '"':
+                    status = 0
+    try:
+        cur_probe = None
+        cur_line = []
+        with open(os.path.join(config.NMAP_SHARE_PATH, 'nmap-payloads'),
+                  'r') as fdesc:
+            for line in fdesc:
+                line = ''.join(_parse_line(line.strip()))
+                if not line.strip():
+                    continue
+                if line.startswith('source '):
+                    continue
+                if line.startswith('udp '):
+                    line = line.strip().split(' ', 2)[1:]
+                    if cur_probe is not None:
+                        _NMAP_PAYLOADS[
+                            nmap_decode_data("".join(cur_line))
+                        ] = cur_probe
+                    cur_probe = line.pop(0)
+                    if line:
+                        line = line[0]
+                        if len(line) > 3 and line[0] == line[-1] == '"':
+                            line = line[1:-1]
+                        cur_line = [line]
+                    else:
+                        cur_line = []
+                elif line.startswith('"'):
+                    if len(line.strip()) > 1 and line[-1] == '"':
+                        line = line[1:-1]
+                    cur_line.append(line)
+        if cur_probe is not None:
+            _NMAP_PAYLOADS[nmap_decode_data("".join(cur_line))] = cur_probe
+    except (AttributeError, TypeError, IOError):
+        LOGGER.warning('Cannot read Nmap service fingerprint file.',
+                       exc_info=True)
+    _NMAP_PAYLOADS_POPULATED = True
+
+
+def get_nmap_udp_payloads():
+    if not _NMAP_PAYLOADS_POPULATED:
+        _read_nmap_payloads()
+    return _NMAP_PAYLOADS
 
 
 _IKESCAN_VENDOR_IDS = {}
@@ -1271,18 +1316,130 @@ def find_ike_vendor_id(vendorid):
     for name, sig in get_ikescan_vendor_ids():
         if sig.search(vid):
             return name
+    return None
 
 
-# Nmap (and Bro) encoding & decoding
+_WIRESHARK_MANUF_DB_LAST_ADDR = []
+_WIRESHARK_MANUF_DB_VALUES = []
+_WIRESHARK_MANUF_DB_POPULATED = False
 
 
-_REPRS = {b'\r': '\\r', b'\n': '\\n', b'\t': '\\t', b'\\': '\\\\'}
+def _mac2int(value):
+    """Converts a MAC address to an integer"""
+    return sum(
+        v << (40 - 8 * i)
+        for i, v in enumerate(int(v, 16) for v in value.split(':'))
+    )
+
+
+def _int2macmask(mask):
+    """Converts the number of bits set to 1 in a mask to the 48-bit
+    integer usable as a mask.
+
+    """
+    return (0xffffffffffff000000000000 >> mask) & 0xffffffffffff
+
+
+def _read_wireshark_manuf_db():
+    global _WIRESHARK_MANUF_DB_LAST_ADDR, _WIRESHARK_MANUF_DB_VALUES, \
+        _WIRESHARK_MANUF_DB_POPULATED
+
+    def parse_line(line):
+        line = line.split('#', 1)[0]
+        if not line:
+            return
+        line = line.strip()
+        if not line:
+            return
+        try:
+            addr, manuf, comment = line.split('\t', 2)
+        except ValueError:
+            try:
+                addr, manuf = line.split('\t', 1)
+            except ValueError:
+                LOGGER.warning('Cannot parse a line from Wireshark '
+                               'manufacturer database [%r].', line,
+                               exc_info=True)
+                return
+            comment = None
+        if '/' in addr:
+            addr, mask = addr.split('/')
+            mask = int(mask)
+        else:
+            mask = (addr.count(':') + 1) * 8
+        addr += ':00' * (5 - addr.count(':'))
+        try:
+            addr = _mac2int(addr)
+        except ValueError:
+            LOGGER.warning('Cannot parse a line from Wireshark '
+                           'manufacturer database [%r].', line)
+            return
+        if (
+                _WIRESHARK_MANUF_DB_LAST_ADDR and
+                _WIRESHARK_MANUF_DB_LAST_ADDR[-1] != addr - 1
+        ):
+            _WIRESHARK_MANUF_DB_LAST_ADDR.append(addr - 1)
+            _WIRESHARK_MANUF_DB_VALUES.append(None)
+        elif (
+                _WIRESHARK_MANUF_DB_VALUES and
+                _WIRESHARK_MANUF_DB_VALUES[-1] == (manuf, comment)
+        ):
+            _WIRESHARK_MANUF_DB_LAST_ADDR.pop()
+            _WIRESHARK_MANUF_DB_VALUES.pop()
+        _WIRESHARK_MANUF_DB_LAST_ADDR.append(
+            (addr & _int2macmask(mask)) + 2 ** (48 - mask) - 1
+        )
+        _WIRESHARK_MANUF_DB_VALUES.append(
+            (manuf, comment)
+        )
+    try:
+        with open(os.path.join(config.WIRESHARK_SHARE_PATH, 'manuf'),
+                  'r') as fdesc:
+            for line in fdesc:
+                parse_line(line[:-1])
+    except (AttributeError, TypeError, IOError):
+        LOGGER.warning('Cannot read Wireshark manufacturer database.',
+                       exc_info=True)
+    _WIRESHARK_MANUF_DB_POPULATED = True
+
+
+def get_wireshark_manuf_db():
+    global _WIRESHARK_MANUF_DB_LAST_ADDR, _WIRESHARK_MANUF_DB_VALUES, \
+        _WIRESHARK_MANUF_DB_POPULATED
+    if not _WIRESHARK_MANUF_DB_POPULATED:
+        _read_wireshark_manuf_db()
+    return _WIRESHARK_MANUF_DB_LAST_ADDR, _WIRESHARK_MANUF_DB_VALUES
+
+
+def mac2manuf(mac):
+    last_addr, values = get_wireshark_manuf_db()
+    try:
+        return values[bisect_left(last_addr, _mac2int(mac))]
+    except IndexError:
+        # empty lists, a warning must have been issued on db load
+        pass
+
+
+# Nmap (and Zeek) encoding & decoding
+
+
+_REPRS = {13: '\\r', 10: '\\n', 9: '\\t', 92: '\\\\'}
 _RAWS = {'r': b'\r', 'n': b'\n', 't': b'\t', '\\': b'\\', '0': b'\x00'}
 
 
 def nmap_encode_data(data):
+    """Encode binary data (bytes) to a string (str) as Nmap would encode it."""
     return "".join(
-        _REPRS[d] if d in _REPRS else d.decode() if b" " <= d <= b"~" else
+        _REPRS[d] if d in _REPRS else
+        chr(d) if 32 <= d <= 126 else '\\x%02x' % d
+        for d in data
+    )
+
+
+def zeek_encode_data(data):
+    """Encode binary data (bytes) to a string (str) as Zeek would encode it."""
+    return "".join(
+        '\\\\' if d == b'\\' else d.decode() if b" " <= d <= b"~" else
         '\\x%02x' % ord(d)
         for d in (data[i:i + 1] for i in range(len(data)))
     )
@@ -1356,13 +1513,37 @@ def nmap_decode_data(data, arbitrary_escapes=False):
                                       arbitrary_escapes=arbitrary_escapes))
 
 
+def _nmap_command_match_subst(match_num):
+    return re.compile('\\$SUBST\\(%d,"([^"]*)","([^"]*)"\\)' % match_num)
+
+
+def _nmap_command_match_i(match_num):
+    return re.compile('\\$I\\(%d,"([<>])"\\)' % match_num)
+
+
 def nmap_svc_fp_format_data(data, match):
     for i, value in enumerate(match.groups()):
         if value is None:
-            if '$%d' % (i + 1) in data:
-                return
+            if '$%d' % (i + 1) in data or \
+               '$P(%d)' % (i + 1) in data or \
+               '$I(%d,' % (i + 1) in data or \
+               '$SUBST(%d,' % (i + 1) in data:
+                return None
             continue
         data = data.replace('$%d' % (i + 1), nmap_encode_data(value))
+        data = data.replace('$P(%d)' % (i + 1),
+                            nmap_encode_data(only_printable(value)))
+        # pylint: disable=cell-var-from-loop
+        data = _nmap_command_match_subst(i + 1).sub(
+            lambda m: nmap_encode_data(value).replace(*m.groups()),
+            data,
+        )
+        if len(value) == 2:
+            # $I(x,"<") or $I(x,">") may exist
+            data = _nmap_command_match_i(i + 1).sub(
+                lambda m: str(struct.unpack('%sH' % m.groups()[0], value)[0]),
+                data,
+            )
     return data
 
 
@@ -1376,27 +1557,19 @@ def normalize_props(props, braces=True):
         props = dict.fromkeys(props)
     # Remove braces if necessary
     if not braces:
-        for key, value in viewitems(props):
-            if (isinstance(value, basestring) and value.startswith('{') and
-                    value.endswith('}')):
+        for key, value in props.items():
+            if (
+                    isinstance(value, str) and value.startswith('{') and
+                    value.endswith('}')
+            ):
                 props[key] = value[1:-1]
     form = "{%s}" if braces else "%s"
     props = dict(
-        (key, (value if isinstance(value, basestring) else
+        (key, (value if isinstance(value, str) else
                (form % key) if value is None else
-               str(value))) for key, value in viewitems(props)
+               str(value))) for key, value in props.items()
     )
     return props
-
-
-def datetime2timestamp(dtm):
-    """Returns the timestamp (as a float value) corresponding to the
-datetime.datetime instance `dtm`"""
-    # Python 2/3 compat: python 3 has datetime.timestamp()
-    try:
-        return dtm.timestamp()
-    except AttributeError:
-        return time.mktime(dtm.timetuple()) + dtm.microsecond / (1000000.)
 
 
 def tz_offset(timestamp=None):
@@ -1407,11 +1580,7 @@ def tz_offset(timestamp=None):
         timestamp = time.time()
     utc_offset = (datetime.datetime.fromtimestamp(timestamp) -
                   datetime.datetime.utcfromtimestamp(timestamp))
-    try:
-        return int(utc_offset.total_seconds())
-    except AttributeError:
-        # total_seconds does not exist in Python 2.6
-        return utc_offset.seconds + utc_offset.days * 24 * 3600
+    return int(utc_offset.total_seconds())
 
 
 def datetime2utcdatetime(dtm):
@@ -1419,7 +1588,7 @@ def datetime2utcdatetime(dtm):
     Returns the given datetime in UTC. dtm is expected to be in local
     timezone.
     """
-    offset = tz_offset(timestamp=datetime2timestamp(dtm))
+    offset = tz_offset(timestamp=dtm.timestamp())
     delta = datetime.timedelta(seconds=offset)
     return dtm - delta
 
@@ -1465,9 +1634,15 @@ def encode_b64(value):
 
 
 def printable(string):
-    if PY3 and isinstance(string, bytes):
+    if isinstance(string, bytes):
         return bytes(c if 32 <= c <= 126 else 46 for c in string)
     return "".join(c if ' ' <= c <= '~' else '.' for c in string)
+
+
+def only_printable(string):
+    if isinstance(string, bytes):
+        return bytes(c for c in string if 32 <= c <= 126)
+    return "".join(c for c in string if ' ' <= c <= '~')
 
 
 def _parse_ssh_key(data):
@@ -1482,24 +1657,35 @@ def parse_ssh_key(data):
     info = dict((hashtype, hashlib.new(hashtype, data).hexdigest())
                 for hashtype in ['md5', 'sha1', 'sha256'])
     parsed = _parse_ssh_key(data)
-    keytype = info["algo"] = next(parsed).decode()
+    try:
+        keytype = info["algo"] = next(parsed).decode()
+    except Exception:
+        LOGGER.warning('Cannot parse SSH host key from data %r', data)
+        return info
     if keytype == "ssh-rsa":
         try:
             info["exponent"], info["modulus"] = (int(encode_hex(elt), 16)
                                                  for elt in parsed)
         except Exception:
-            LOGGER.info("Cannot parse SSH host key from data %r", data,
+            LOGGER.info("Cannot parse SSH RSA host key from data %r", data,
                         exc_info=True)
         else:
-            info["bits"] = math.ceil(math.log(info["modulus"], 2))
+            info["bits"] = int(math.ceil(math.log(info["modulus"], 2)))
             # convert integer to strings to prevent overflow errors
             # (e.g., "MongoDB can only handle up to 8-byte ints")
             for val in ["exponent", "modulus"]:
                 info[val] = str(info[val])
+    elif keytype == 'ssh-dss':
+        info["bits"] = int(math.ceil(
+            math.log(int(encode_hex(next(parsed)), 16), 2)
+        ))
     elif keytype == 'ecdsa-sha2-nistp256':
         info['bits'] = 256
     elif keytype == 'ssh-ed25519':
-        info['bits'] = len(next(data)) * 8
+        info['bits'] = len(next(parsed)) * 8
+    else:
+        LOGGER.debug("Cannot get key size for type %r (data %r)", keytype,
+                     data)
     return info
 
 
@@ -1521,9 +1707,19 @@ _ADDR_TYPES = [
     None,
     "Private",
     None,
+    "Reserved",
+    None,
+    "Documentation",
+    None,
     "IPv6-to-IPv4",
     None,
     "Private",
+    None,
+    "Benchmark",
+    None,
+    "Documentation",
+    None,
+    "Documentation",
     None,
     "Multicast",
     "Reserved",
@@ -1564,10 +1760,20 @@ _ADDR_TYPES_LAST_IP = [
     ip2int("::ffff:169.254.255.255"),
     ip2int("::ffff:172.15.255.255"),
     ip2int("::ffff:172.31.255.255"),
+    ip2int("::ffff:191.255.255.255"),
+    ip2int("::ffff:192.0.0.255"),
+    ip2int("::ffff:192.0.1.255"),
+    ip2int("::ffff:192.0.2.255"),
     ip2int("::ffff:192.88.98.255"),
     ip2int("::ffff:192.88.99.255"),
     ip2int("::ffff:192.167.255.255"),
     ip2int("::ffff:192.168.255.255"),
+    ip2int("::ffff:198.17.255.255"),
+    ip2int("::ffff:198.19.255.255"),
+    ip2int("::ffff:198.51.99.255"),
+    ip2int("::ffff:198.51.100.255"),
+    ip2int("::ffff:203.0.112.255"),
+    ip2int("::ffff:203.0.113.255"),
     ip2int("::ffff:223.255.255.255"),
     ip2int("::ffff:239.255.255.255"),
     ip2int("::ffff:255.255.255.254"),
@@ -1613,11 +1819,15 @@ _CERTINFOS = [
         b'\n *'
         b'Issuer: (?P<issuer>.*)'
         b'\n(?:.*\n)* *'
+        b'Not Before *: (?P<not_before>.*)'
+        b'\n(?:.*\n)* *'
+        b'Not After *: (?P<not_after>.*)'
+        b'\n(?:.*\n)* *'
         b'Subject: (?P<subject>.*)'
         b'\n(?:.*\n)* *'
-        b'Public Key Algorithm: (?P<pubkeyalgo>rsaEncryption)'
+        b'Public Key Algorithm: (?P<type>rsaEncryption)'
         b'\n *'
-        b'Public-Key: \\((?P<bits>[0-9]+) bit\\)'
+        b'(?:RSA )?Public-Key: \\((?P<bits>[0-9]+) bit\\)'
         b'\n *'
         b'Modulus: *\n(?P<modulus>[\\ 0-9a-f:\n]+)'
         b'\n *'
@@ -1628,16 +1838,26 @@ _CERTINFOS = [
         b'\n *'
         b'Issuer: (?P<issuer>.*)'
         b'\n(?:.*\n)* *'
+        b'Not Before *: (?P<not_before>.*)'
+        b'\n(?:.*\n)* *'
+        b'Not After *: (?P<not_after>.*)'
+        b'\n(?:.*\n)* *'
         b'Subject: (?P<subject>.*)'
         b'\n(?:.*\n)* *'
-        b'Public Key Algorithm: (?P<pubkeyalgo>.*)'
+        b'Public Key Algorithm: (?P<type>.*)'
         b'(?:\n|$)'
     ),
 ]
 
-_CERTINFOS_SAN = re.compile(
+_CERTINFOS_EXT_SAN = re.compile(
     b'\n *'
-    b'X509v3 Subject Alternative Name: *\n *(?P<san>.*)'
+    b'X509v3 Subject Alternative Name: *(?:critical *)?\n *(?P<san>.*)'
+    b'(?:\n|$)'
+)
+
+_CERTINFOS_EXT_BC = re.compile(
+    b'\n *'
+    b'X509v3 Basic Constraints: *(?:critical *)?\n *(?P<bc>.*)'
     b'(?:\n|$)'
 )
 
@@ -1651,6 +1871,29 @@ _CERTKEYS = {
     'ST': 'stateOrProvinceName',
     'SN': 'surname',
 }
+
+_CERTALGOS = {
+    6: 'rsaEncryption',
+    408: 'id-ecPublicKey',
+    116: 'id-dsa',
+    28: 'dhpublicnumber',
+}
+
+_CERTKEYTYPES = {
+    6: 'rsa',
+    408: 'ec',
+    116: 'dsa',
+    28: 'dh',
+}
+
+PUBKEY_TYPES = {
+    'rsaEncryption': 'rsa',
+    'id-ecPublicKey': 'ec',
+    'id-dsa': 'dsa',
+    'dhpublicnumber': 'dh',
+}
+
+PUBKEY_REV_TYPES = dict((val, key) for key, val in PUBKEY_TYPES.items())
 
 
 def _parse_cert_subject(subject):
@@ -1712,30 +1955,126 @@ def _parse_cert_subject(subject):
     yield "".join(curkey), "".join(curvalue)
 
 
-def get_cert_info(cert):
+def _parse_subject(subject):
+    """Parses an X509Name object (from pyOpenSSL module) and returns a
+text and a dict suitable for use by get_cert_info().
+
+    """
+    components = []
+    for k, v in subject.get_components():
+        k = printable(k).decode()
+        v = printable(v).decode()
+        k = _CERTKEYS.get(k, k)
+        components.append((k, v))
+    return ('/'.join('%s=%s' % kv for kv in components),
+            dict(components))
+
+
+if STRPTIME_SUPPORTS_TZ:
+    def _parse_datetime(value):
+        try:
+            return datetime.datetime.strptime(value.decode(), '%Y%m%d%H%M%S%z')
+        except ValueError:
+            return datetime.datetime.strptime(value.decode()[:14],
+                                              '%Y%m%d%H%M%S')
+        except Exception:
+            LOGGER.warning('Cannot parse datetime value %r', value,
+                           exc_info=True)
+else:
+    def _parse_datetime(value):
+        try:
+            return datetime.datetime.strptime(value.decode()[:14],
+                                              '%Y%m%d%H%M%S')
+        except Exception:
+            LOGGER.warning('Cannot parse datetime value %r', value,
+                           exc_info=True)
+            return None
+
+
+def _get_cert_info_pyopenssl(cert):
     """Extract info from a certificate (hash values, issuer, subject,
     algorithm) in an handy-to-index-and-query form.
+
+This version relies on the pyOpenSSL module.
+
+    """
+    result = {}
+    for hashtype in ['md5', 'sha1', 'sha256']:
+        result[hashtype] = hashlib.new(hashtype, cert).hexdigest()
+    cert = osslc.load_certificate(osslc.FILETYPE_ASN1, cert)
+    result['subject_text'], result['subject'] = _parse_subject(
+        cert.get_subject()
+    )
+    result['issuer_text'], result['issuer'] = _parse_subject(cert.get_issuer())
+    for i in range(cert.get_extension_count()):
+        ext = cert.get_extension(i)
+        if ext.get_short_name() == b'subjectAltName':
+            try:
+                # XXX str() / encoding
+                result['san'] = [x.strip() for x in str(ext).split(', ')]
+            except Exception:
+                LOGGER.warning('Cannot decode subjectAltName %r for %r', ext,
+                               result['subject_text'], exc_info=True)
+            break
+    result['self_signed'] = result['issuer_text'] == result['subject_text']
+    not_before = _parse_datetime(cert.get_notBefore())
+    not_after = _parse_datetime(cert.get_notAfter())
+    if not_before is not None:
+        result['not_before'] = not_before
+        if not_after is not None:
+            result['not_after'] = not_after
+            lifetime = not_after - not_before
+            result['lifetime'] = int(lifetime.total_seconds())
+    elif not_after is not None:
+        result['not_after'] = not_after
+    result['pubkey'] = {}
+    pubkey = cert.get_pubkey()
+    pubkeytype = pubkey.type()
+    result['pubkey']['type'] = _CERTKEYTYPES.get(pubkeytype, pubkeytype)
+    result['pubkey']['bits'] = pubkey.bits()
+    if pubkeytype == 6:
+        # RSA
+        numbers = pubkey.to_cryptography_key().public_numbers()
+        result['pubkey']['exponent'] = numbers.e
+        result['pubkey']['modulus'] = str(numbers.n)
+    pubkey = pubkey.to_cryptography_key().public_bytes(
+        Encoding.DER,
+        PublicFormat.SubjectPublicKeyInfo,
+    )
+    for hashtype in ['md5', 'sha1', 'sha256']:
+        result['pubkey'][hashtype] = hashlib.new(hashtype, pubkey).hexdigest()
+    result['pubkey']['raw'] = encode_b64(pubkey).decode()
+    return result
+
+
+def _get_cert_info_openssl(cert):
+    """Extract info from a certificate (hash values, issuer, subject,
+    algorithm) in an handy-to-index-and-query form.
+
+This version parses the output of "openssl x509 -text" command line,
+and is a fallback when pyOpenSSL cannot be imported.
 
     """
     result = {}
     for hashtype in ['md5', 'sha1', 'sha256']:
         result[hashtype] = hashlib.new(hashtype, cert).hexdigest()
     proc = subprocess.Popen([config.OPENSSL_CMD, 'x509', '-noout', '-text',
-                             '-inform', 'DER'], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE)
+                             '-inform', 'DER', '-pubkey'],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     proc.stdin.write(cert)
     proc.stdin.close()
-    data = proc.stdout.read()
+    data, pubkey = proc.stdout.read().split(b'-----BEGIN PUBLIC KEY-----')
     for expr in _CERTINFOS:
         match = expr.search(data)
         if match is not None:
             break
     else:
-        LOGGER.info("Cannot parse certificate %r - no matching expression",
-                    cert)
+        LOGGER.info("Cannot parse certificate %r - "
+                    "no matching expression in %r",
+                    cert, data)
         return result
-    try:
-        for field, fdata in viewitems(match.groupdict()):
+    for field, fdata in match.groupdict().items():
+        try:
             fdata = fdata.decode()
             if field in ['issuer', 'subject']:
                 fdata = [(_CERTKEYS.get(key, key), value)
@@ -1745,25 +2084,77 @@ def get_cert_info(cert):
                                      for key, value in fdata)
                 result['%s_text' % field] = '/'.join('%s=%s' % item
                                                      for item in fdata)
+            elif field in ['bits', 'exponent']:
+                result[field] = int(fdata)
+            elif field == 'modulus':
+                result[field] = str(int(fdata
+                                        .replace(' ', '')
+                                        .replace(':', '')
+                                        .replace('\n', ''), 16))
+            elif field in ['not_before', 'not_after']:
+                if STRPTIME_SUPPORTS_TZ:
+                    try:
+                        result[field] = datetime.datetime.strptime(
+                            fdata,
+                            '%b %d %H:%M:%S %Y %Z',
+                        )
+                    except ValueError:
+                        result[field] = datetime.datetime.strptime(
+                            fdata[:-4],
+                            '%b %d %H:%M:%S %Y',
+                        )
+                else:
+                    result[field] = datetime.datetime.strptime(
+                        fdata[:-4],
+                        '%b %d %H:%M:%S %Y',
+                    )
             else:
                 result[field] = fdata
-    except Exception:
-        LOGGER.info("Cannot parse certificate %r", cert, exc_info=True)
-    san = _CERTINFOS_SAN.search(data)
+        except Exception:
+            LOGGER.info(
+                "Error when parsing certificate %r with field %r (value %r)",
+                cert, field, fdata, exc_info=True,
+            )
+    result['self_signed'] = result['issuer_text'] == result['subject_text']
+    if 'not_before' in result and 'not_after' in result:
+        lifetime = result['not_after'] - result['not_before']
+        result['lifetime'] = int(lifetime.total_seconds())
+    san = _CERTINFOS_EXT_SAN.search(data)
     if san is not None:
         try:
             result['san'] = san.groups()[0].decode().split(', ')
         except Exception:
             LOGGER.info("Cannot parse subjectAltName in certificate %r", cert,
                         exc_info=True)
+    result['pubkey'] = {}
+    for fld in ['modulus', 'exponent', 'bits']:
+        if fld in result:
+            result['pubkey'][fld] = result.pop(fld)
+    if 'type' in result:
+        pubkeytype = result.pop('type')
+        result['pubkey']['type'] = PUBKEY_TYPES.get(pubkeytype, pubkeytype)
+    pubkey = decode_b64(b''.join(pubkey.splitlines()[1:-1]))
+    for hashtype in ['md5', 'sha1', 'sha256']:
+        result['pubkey'][hashtype] = hashlib.new(hashtype, pubkey).hexdigest()
+    result['pubkey']['raw'] = encode_b64(pubkey)
     return result
+
+
+if USE_PYOPENSSL:
+    get_cert_info = _get_cert_info_pyopenssl
+else:
+    get_cert_info = _get_cert_info_openssl
 
 
 def display_top(db, arg, flt, lmt):
     field, least = ((arg[1:], True)
                     if arg[:1] in '!-~' else
                     (arg, False))
-    for entry in db.topvalues(field, flt=flt, topnbr=lmt or 10, least=least):
+    if lmt is None:
+        lmt = 10
+    elif lmt == 0:
+        lmt = None
+    for entry in db.topvalues(field, flt=flt, topnbr=lmt, least=least):
         if isinstance(entry['_id'], (list, tuple)):
             sep = ' / ' if isinstance(entry['_id'], tuple) else ', '
             if entry['_id']:
@@ -1786,42 +2177,36 @@ def display_top(db, arg, flt, lmt):
         elif isinstance(entry['_id'], dict):
             entry['_id'] = json.dumps(entry['_id'],
                                       default=serialize)
+        elif not entry['_id']:
+            entry['_id'] = "None"
         print("%(_id)s: %(count)d" % entry)
 
 
-if PY3:
+# https://stackoverflow.com/a/26348624
+@functools.total_ordering
+class MinValue:
+    def __le__(self, other):
+        return True
 
-    # https://stackoverflow.com/a/26348624
-    @functools.total_ordering
-    class MinValue(object):
-        def __le__(self, other):
-            return True
+    def __eq__(self, other):
+        return self is other
 
-        def __eq__(self, other):
-            return self is other
 
-    MIN_VALUE = MinValue()
+MIN_VALUE = MinValue()
 
-    def key_sort_none(value):
-        """This function can be used as `key=` argument for sorted() and
+
+def key_sort_none(value):
+    """This function can be used as `key=` argument for sorted() and
 .sort(), in order to sort values that can be of a certain type (e.g.,
 str), or None, so that None is always lower.
 
 We just need to replace None with MIN_VALUE, which is an object that
 happily compares with anything, and is lower than anything.
 
-        """
-        if value is None:
-            return MIN_VALUE
-        return value
-
-else:
-    def key_sort_none(value):
-        """In Python 2, None is lower than most types (int, str, etc.), so we
-have nothing to do here.
-
-        """
-        return value
+    """
+    if value is None:
+        return MIN_VALUE
+    return value
 
 
 def ptr2addr(ptr):
@@ -1831,7 +2216,7 @@ def ptr2addr(ptr):
     """
     if ptr.endswith(".in-addr.arpa"):
         return '.'.join(reversed(ptr.split(".")[:4]))
-    elif ptr.endswith(".ip6.arpa"):
+    if ptr.endswith(".ip6.arpa"):
         return int2ip6(int(ptr[:-9].replace('.', '')[::-1], 16))
     return None
 
@@ -1849,7 +2234,7 @@ def deep_sort_dict_list(elt):
     elt must be a dictionary
     Notice: It does not sort nested lists.
     """
-    for value in viewvalues(elt):
+    for value in elt.values():
         if isinstance(value, list):
             value.sort()
         elif isinstance(value, dict):
