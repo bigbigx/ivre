@@ -1,42 +1,54 @@
 Docker
 ======
 
-Using Vagrant
--------------
+Versions
+--------
 
-If you already manage your Docker containers using
-`Vagrant <https://www.vagrantup.com/>`__, or if you want to give it a
-try (or if you are not running a Linux system and want to use Docker
-anyway), you can use it to get the images, prepare and run the
-containers.
+The images published on Docker hub are built from the current
+``master`` repository branch (tag ``latest``, will be used by default)
+and from the current release (tag ``vX.Y.Z``, use
+``ivre/<imagename>:vX.Y.Z`` to use it).
 
-You'll need a recent version of Vagrant (at least 1.6), since Docker
-providers do not exist in prior versions.
+Images
+------
 
-With the ``Vagrantfile`` as it is provided, the TCP port 80 of your host
-will be used, so you need either to make sure it is not already in use,
-or to modify the ``Vagrantfile`` after the ``cp`` step in the
-instructions below to use another port.
+IVRE ships the following Docker images (all built from the
+``Dockerfile``\ s under ``docker/``):
 
-To use the ``Vagrantfile`` located in the ``docker/`` directory of the
-source tree (or the ``[PREFIX]/share/ivre/docker/`` directory when IVRE
-has been installed), run (from the folder where you want to store your
-data):
+=================== ==============================================================
+Image               Role
+=================== ==============================================================
+``ivre/base``       Base image with IVRE and its dependencies installed;
+                    parent of every other image.
+``ivre/client``     CLI container, used to run ``ivre`` subcommands
+                    against the database.
+``ivre/web``        nginx front-end serving the Web UI static assets and
+                    reverse-proxying ``/cgi/``, ``/dokuwiki/`` and
+                    ``/mcp`` to the internal backends.
+``ivre/web-uwsgi``  uWSGI application server running the IVRE Web API
+                    (Bottle app in :mod:`ivre.web.app`).
+``ivre/web-doku``   PHP-FPM container running the Dokuwiki wiki
+                    integrated in the Web UI.
+``ivre/web-mcp``    :doc:`../usage/mcp-server` exposed over the Streamable
+                    HTTP transport, reachable through the
+                    ``ivre/web`` reverse proxy at ``/mcp``. Bundles
+                    Debian's ``nmap-common`` data files under
+                    ``/usr/share/nmap/`` so the MCP
+                    ``nmap_service_values`` tool can enumerate known
+                    service names and products.
+=================== ==============================================================
+
+Using docker compose
+--------------------
+
+The easiest way, just run:
 
 ::
 
-   $ mkdir -m 1777 var_{lib,log}_mongodb ivre-share
-     # For people using SELinux enforced, you need to run
-   $ sudo chcon -Rt svirt_sandbox_file_t var_{lib,log}_mongodb ivre-share
+    $ docker compose up
 
-   $ cp [path to ivre source]/docker/Vagrantfile .
-   $ vagrant up --no-parallel
-
-The ``--no-parallel`` option prevents Vagrant from starting the
-``ivreweb`` container before the ``ivredb`` is ready.
-
-The DB and Web servers should now be running, with the TCP port 80 of
-your host redirected to the ``ivreweb`` container.
+The containers should now be running, with the TCP port 80 of your
+host redirected to the ``ivreweb`` container.
 
 To get a shell with the CLI tools and Python API, attach to the
 ``ivreclient`` container:
@@ -52,37 +64,49 @@ You can detach from the container (without stopping it) by using
 
 To initialize the database and start playing with IVRE, you need to
 enter some commands described in the `related section
-below <#a-command-line-client>`__.
+below <#initialization>`__.
 
-Without Vagrant
----------------
+Using Vagrant
+-------------
 
-Getting the images
-..................
+If you already manage your Docker containers using `Vagrant
+<https://www.vagrantup.com/>`__, you can use it to run the containers.
 
-You can either get the images from a repository on the Internet or build
-them. I'll consider you are on a computer with Docker installed and an
-access to the Internet.
+With the ``Vagrantfile`` as it is provided, the TCP port 80 of your host
+will be used, so you need either to make sure it is not already in use,
+or to modify the ``Vagrantfile`` after the ``cp`` step in the
+instructions below to use another port.
 
-From the Internet
-~~~~~~~~~~~~~~~~~
+To use the ``Vagrantfile`` located in the ``docker/`` directory of the
+source tree (or the ``[PREFIX]/share/ivre/docker/`` directory when IVRE
+has been installed), run (from the folder where you want to store your
+data):
 
 ::
 
-   $ for img in agent base client db web ; do
-   > docker pull "ivre/$img"
-   > done
+   $ mkdir -m 1777 var_lib_mongodb ivre-share dokuwiki_data
+     # For people using SELinux enforced, you need to run
+   $ sudo chcon -Rt svirt_sandbox_file_t var_lib_mongodb ivre-share dokuwiki_data
+
+   $ cp [path to ivre source]/docker/Vagrantfile .
+   $ vagrant up --no-parallel
+
+The ``--no-parallel`` option prevents Vagrant from starting the
+``ivreuwsgi`` container before the ``ivredb`` is ready.
+
+To access the ``ivreclient`` container, see the `Using Docker Compose
+<#using-docker-compose>`__ since it is similar.
 
 Build the images
-~~~~~~~~~~~~~~~~
+----------------
 
-You can also build the images from the provided ``Dockerfile``\ s. For
+By default, the images will be downloaded from the Docker Hub. But you
+also can build the images from the provided ``Dockerfile``\ s. For
 that, from the ``docker/`` directory, run:
 
 ::
 
-   $ docker pull debian:stable
-   $ for img in base client agent db web ; do
+   $ for img in base client web web-doku web-mcp web-uwsgi ; do
    > docker build -t "ivre/$img" "$img"
    > done
 
@@ -102,122 +126,33 @@ run:
 ::
 
    $ git archive --format=tar --prefix=ivre/ HEAD -o docker/base-local/ivre.tar
-   $ tmp=`mktemp | sed 's#^/##'`; python setup.py --version | tr -d '\n' > "/$tmp"
-   $ tar rf docker/base-local/ivre.tar --transform="s#$tmp#ivre/ivre/VERSION#" /$tmp
-   $ rm "/$tmp"
-   $ docker pull debian:stable
+   $ tar --owner=root:0 --group=root:0 --transform='s#^#ivre/#' -rf docker/base-local/ivre.tar ivre/_version.py
    $ docker build -t ivre/base docker/base-local
 
 Using pip
 ^^^^^^^^^
 
 Another way to create the ``ivre/base`` image is to use
-`pip <https://pypi.python.org/pypi/pip>`__ and thus get IVRE from
-`PyPI <https://pypi.python.org>`__, the Python Package Index. Please
-note that the version of IVRE on PyPI is not always up-to-date. From the
+`pip <https://pypi.python.org/pypi/pip>`__. From the
 ``docker/`` directory, run:
 
 ::
 
-   $ docker pull debian:stable
    $ docker build -t ivre/base base-pip
 
-Alternative build for the web image using Apache
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Initialization
+--------------
 
-To use Apache (rather than Nginx) for the ``ivre/web`` image, simply
-run, from the ``docker/`` directory:
-
-::
-
-   $ docker pull ivre/base  # or build it locally
-   $ docker build -t ivre/web web-apache
-
-Unlike the default ``ivre/web`` image, this image uses the Debian
-package to install Dokuwiki (the Debian package for Dokuwiki can only be
-used with Apache and the default ``ivre/web`` image uses Nginx). This
-can explain some differences one could experience between the two
-images.
-
-Running
-.......
-
-The database server
-~~~~~~~~~~~~~~~~~~~
-
-To create the volume to store MongoDB data, run (``chmod``-ing to
-``1777`` is a bit overkill, ``chown``-ing it to the UID of the MongoDB
-user in the container would do):
+Attach to the ``ivreclient`` container and run the initialization
+commands:
 
 ::
 
-   $ mkdir -m 1777 var_{lib,log}_mongodb
-
-To run an instance of the MongoDB server ready for IVRE, issue (this
-will run the instance and give it the name ``ivredb``; we will use this
-name later):
-
-::
-
-   $ docker run -d --name ivredb --hostname ivredb \
-   >        --volume "`pwd`/var_lib_mongodb":/var/lib/mongodb \
-   >        --volume "`pwd`/var_log_mongodb":/var/log/mongodb \
-   >        ivre/db
-
-You can add the option ``-p 27017:27017`` to have the MongoDB service
-accessible through the host's TCP port 27017.
-
-The web server
-~~~~~~~~~~~~~~
-
-::
-
-   $ docker run -d --name ivreweb --hostname ivreweb \
-   >        --link ivredb:ivredb --publish 80:80 ivre/web
-
-The ``--publish 80:80`` option creates a redirection and makes the web
-server accessible through the host's TCP port 80.
-
-If you want to use modified configuration files, you can use
-``--volume``. For example:
-
-::
-
-   $ docker run -d --name ivreweb --hostname ivreweb \
-   >        --volume "`pwd`/ivre.conf:/etc/ivre.conf"
-   >        --volume "`pwd`/nginx-default-site:/etc/nginx/sites-available/default"
-   >        --link ivredb:ivredb --publish 80:80 ivre/web
-
-A command line client
-~~~~~~~~~~~~~~~~~~~~~
-
-First, place Nmap result files (XML format) in a specific directory:
-
-::
-
-   $ mkdir -m 1777 ivre-share
-   $ cp -r /path/to/my/nmap/results.xml ivre-share
-
-Now to get a shell in an IVRE client instance (for command line
-actions), issue:
-
-::
-
-   $ docker run -i -t --name ivreclient --hostname ivreclient \
-   >        --link ivredb:ivredb --volume "`pwd`/ivre-share":/ivre-share \
-   >        ivre/client
-
-This gives a shell in the ``ivreclient`` container, and from there we
-can use IVRE's command line tools and Python API. For example, to
-initialize the database:
-
-::
-
+   user@host:~$ docker attach ivreclient
    root@ivreclient:/# yes | ivre ipinfo --init
    root@ivreclient:/# yes | ivre scancli --init
    root@ivreclient:/# yes | ivre view --init
    root@ivreclient:/# yes | ivre flowcli --init
-   root@ivreclient:/# yes | ivre runscansagentdb --init
    root@ivreclient:/# ivre ipdata --download
 
 Then we can integrate the Nmap results to the database
@@ -228,7 +163,7 @@ Then we can integrate the Nmap results to the database
    root@ivreclient:/# ivre scan2db -r -s MySource -c MyCategory /ivre-share
    root@ivreclient:/# ivre db2view nmap
 
-You can then exit the shell (``C-d``), this will stop the container.
+You can then detach from the container (``C-p C-q``).
 
 ::
 

@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2025 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,71 +19,99 @@
 
 """Update the database from output of the Zeek script 'passiverecon'"""
 
-
-from argparse import ArgumentParser
 import functools
+import json
+import os
 import signal
 import sys
+from argparse import ArgumentParser
+from collections.abc import Generator, Iterable
+from typing import Any, BinaryIO, Callable
 
-
-import ivre.db
-import ivre.passive
-import ivre.parser.zeek
-
+from ivre.db import DBPassive, db
+from ivre.parser.zeek import ZeekFile
+from ivre.passive import get_ignore_rules, getinfos, handle_rec
+from ivre.types import Record
+from ivre.utils import LOGGER, open_file, recursive_filelisting
 
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
-def _get_ignore_rules(ignore_spec):
-    """Executes the ignore_spec file and returns the ignore_rules
-dictionary.
-
-    """
-    ignore_rules = {}
-    if ignore_spec is not None:
-        exec(compile(open(ignore_spec, "rb").read(), ignore_spec, 'exec'),
-             ignore_rules)
-    return ignore_rules
-
-
-def rec_iter(zeek_parser, sensor, ignore_rules):
+def rec_iter(
+    zeek_parser: Iterable[dict[str, Any]],
+    sensor: str | None,
+    ignore_rules: dict[str, dict[str, list[tuple[int, int]]]],
+) -> Generator[tuple[int | None, Record], None, None]:
     for line in zeek_parser:
         line["timestamp"] = line.pop("ts")
         # skip PassiveRecon::
         line["recon_type"] = line["recon_type"][14:]
-        yield from ivre.passive.handle_rec(
+        yield from handle_rec(
             sensor,
-            ignore_rules.get('IGNORENETS', {}),
-            ignore_rules.get('NEVERIGNORE', {}),
-            **line
+            ignore_rules.get("IGNORENETS", {}),
+            ignore_rules.get("NEVERIGNORE", {}),
+            **line,
         )
 
 
-def main():
-    parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--sensor', '-s', help='Sensor name')
-    parser.add_argument('--ignore-spec', '-i',
-                        help='Filename containing ignore rules')
-    parser.add_argument('--bulk', action='store_true',
-                        help='Use DB bulk inserts (this is the default)')
-    parser.add_argument('--local-bulk', action='store_true',
-                        help='Use local (memory) bulk inserts')
-    parser.add_argument('--no-bulk', action='store_true',
-                        help='Do not use bulk inserts')
-    args = parser.parse_args()
-    ignore_rules = _get_ignore_rules(args.ignore_spec)
-    if (not (args.no_bulk or args.local_bulk)) or args.bulk:
-        function = ivre.db.db.passive.insert_or_update_bulk
+def build_parser() -> ArgumentParser:
+    """Build the argument parser for this tool."""
+    parser = ArgumentParser(description=__doc__, parents=[db.passive.argparser_insert])
+    parser.add_argument(
+        "files", nargs="*", metavar="FILE", help="passive_recon log files"
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    ignore_rules = get_ignore_rules(args.ignore_spec)
+    if args.test:
+        function = DBPassive().insert_or_update_local_bulk
+    elif (not (args.no_bulk or args.local_bulk)) or args.bulk:
+        function = db.passive.insert_or_update_bulk
     elif args.local_bulk:
-        function = ivre.db.db.passive.insert_or_update_local_bulk
+        function = db.passive.insert_or_update_local_bulk
     else:
         function = functools.partial(
-            ivre.db.DBPassive.insert_or_update_bulk,
-            ivre.db.db.passive,
+            DBPassive.insert_or_update_bulk,
+            db.passive,
         )
-    zeek_parser = ivre.parser.zeek.ZeekFile(sys.stdin.buffer)
-    function(
-        rec_iter(zeek_parser, args.sensor, ignore_rules),
-        getinfos=ivre.passive.getinfos
-    )
+    files: Iterable[BinaryIO | str]
+    if not args.files:
+        files = [sys.stdin.buffer]
+    elif args.recursive:
+        files = recursive_filelisting(args.files)
+    else:
+        files = args.files
+    error = 0
+    generator: Callable[[BinaryIO | str], Iterable[dict[str, Any]]]
+    for fname in files:
+        if isinstance(fname, str):
+            if not os.path.exists(fname):
+                LOGGER.warning("file %r does not exist", fname)
+                error += 1
+                continue
+            with open_file(fname) as fdesc:
+                fchar = fdesc.read(1)
+            try:
+                generator = {
+                    b"{": lambda fname: (json.loads(line) for line in open_file(fname)),  # type: ignore
+                    b"#": ZeekFile,
+                }[fchar]
+            except KeyError:
+                LOGGER.warning("file %r is invalid", fname)
+                error += 1
+                continue
+        else:
+            generator = ZeekFile
+        try:
+            function(
+                rec_iter(generator(fname), args.sensor, ignore_rules), getinfos=getinfos
+            )
+        except Exception:
+            LOGGER.warning("failed to import file %r", fname, exc_info=True)
+            error += 1
+            continue
+        sys.exit(error)

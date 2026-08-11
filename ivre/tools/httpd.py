@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2026 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -26,88 +26,103 @@ deployments should use "real" web servers (IVRE has been successfully
 tested with both Apache and Nginx).
 """
 
-
-from argparse import ArgumentParser
 import os
+from argparse import ArgumentParser
 
-
-from bottle import default_app, get, redirect, run, static_file
-
+from bottle import HTTPResponse, default_app, get, redirect, run, static_file
 
 from ivre.config import DEBUG, WEB_DOKU_PATH, WEB_STATIC_PATH
 from ivre.web import app as webapp
-
 
 #
 # Index page
 #
 
-@get('/')
-def server_index():
+
+@get("/")
+def server_index() -> None:
     """Needed to redirect / to index.html"""
-    return redirect('index.html')
+    redirect("index.html")
 
 
-@get('/doc')
-def server_doc_index():
+@get("/ui")
+def server_ui_index() -> None:
     """Needed to redirect / to index.html"""
-    return redirect('doc/index.html')
+    redirect("ui/index.html")
 
 
-@get('/doc/<subdir:re:dev|install|usage>')
-def server_doc_subindex(subdir):
+@get("/ui/")
+def server_ui_index2() -> None:
     """Needed to redirect / to index.html"""
-    return redirect('%s/index.html' % subdir)
+    redirect("index.html")
 
 
-@get('/doc/')
-@get('/doc/<:re:dev|install|usage>/')
-def server_doc_subindex2():
+@get("/doc")
+def server_doc_index() -> None:
     """Needed to redirect / to index.html"""
-    return redirect('index.html')
+    redirect("doc/index.html")
+
+
+@get("/doc/<subdir:re:dev|install|usage>")
+def server_doc_subindex(subdir: str) -> None:
+    """Needed to redirect / to index.html"""
+    redirect(f"{subdir}/index.html")
+
+
+@get("/doc/")
+@get("/doc/<:re:dev|install|usage>/")
+def server_doc_subindex2() -> None:
+    """Needed to redirect / to index.html"""
+    redirect("index.html")
 
 
 #
 # Static files
 #
 
-@get('/dokuwiki/<filepath:path>')
-def server_doku(filepath):
+
+@get("/dokuwiki/<filepath:path>")
+def server_doku(filepath: str) -> HTTPResponse:
     """This function serves Dokuwiki files as static text files. This is
-far from being great...
+    far from being great...
 
     """
-    filepath = filepath.lower().replace(':', '/')
-    if '.' not in os.path.basename(filepath):
-        filepath += '.txt'
+    filepath = filepath.lower().replace(":", "/")
+    if "." not in os.path.basename(filepath):
+        filepath += ".txt"
+    assert WEB_DOKU_PATH is not None
     return static_file(filepath, root=WEB_DOKU_PATH)
 
 
-@get('/<filepath:path>')
-def server_static(filepath):
+@get("/<filepath:path>")
+def server_static(filepath: str) -> HTTPResponse:
     """Serve the static (HTML, JS, CSS, ...) content."""
+    assert WEB_STATIC_PATH is not None
     return static_file(filepath, root=WEB_STATIC_PATH)
 
 
-def parse_args():
-    """Imports the available module to parse the arguments and return
-    the parsed arguments.
-
-    """
+def build_parser() -> ArgumentParser:
+    """Build the argument parser for this tool."""
     parser = ArgumentParser(description=__doc__)
     parser.add_argument(
-        '--bind-address', '-b', default="127.0.0.1",
-        help='(IP) Address to bind the server to (defaults to 127.0.0.1).',
+        "--bind-address",
+        "-b",
+        default="127.0.0.1",
+        help="(IP) Address to bind the server to (defaults to 127.0.0.1).",
     )
-    parser.add_argument('--port', '-p', type=int, default=80,
-                        help='(TCP) Port to use (defaults to 80)')
-    return parser.parse_args()
+    parser.add_argument(
+        "--port", "-p", type=int, default=80, help="(TCP) Port to use (defaults to 80)"
+    )
+    return parser
 
 
-def main():
+def main() -> None:
     """Function run when the tool is called."""
-    args = parse_args()
+    args = build_parser().parse_args()
     print(__doc__)
     application = default_app()
-    application.mount('/cgi/', webapp.application)
+    try:  # workaround broken app mount with Bottle 0.13
+        application._mount_wsgi("/cgi/", webapp.application)  # type: ignore
+    except AttributeError:
+        application.mount("/cgi/", webapp.application)
     run(host=args.bind_address, port=args.port, debug=DEBUG)

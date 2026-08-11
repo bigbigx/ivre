@@ -1,27 +1,44 @@
-[![Build Status](https://travis-ci.org/cea-sec/ivre.svg)](https://travis-ci.org/cea-sec/ivre)
-[![Documentation Status](https://readthedocs.org/projects/ivre/badge/?version=latest)](https://doc.ivre.rocks/en/latest/?badge=latest)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/0116170aaaa54915a72aad286029250b)](https://app.codacy.com/app/p-l-/ivre)
-[![Join the chat at Gitter](https://badges.gitter.im/cea-sec/ivre.svg)](https://gitter.im/cea-sec/ivre)
 [![Follow on Twitter](https://img.shields.io/twitter/follow/IvreRocks.svg?logo=twitter)](https://twitter.com/IvreRocks)
+[![Follow on Mastodon](https://img.shields.io/mastodon/follow/109349639355238149?domain=https%3A%2F%2Finfosec.exchange&style=social)](https://infosec.exchange/@ivre)
+[![GitHub stars](https://img.shields.io/github/stars/ivre/ivre?style=social)](https://github.com/ivre/ivre)
+[![PyPI downloads](https://pepy.tech/badge/ivre)](https://pypi.org/project/ivre/)
+[![Docker pulls](https://img.shields.io/docker/pulls/ivre/web)](https://hub.docker.com/u/ivre/)
+
+[![MongoDB and Elasticsearch tests](https://github.com/ivre/ivre/actions/workflows/mongodb.yml/badge.svg?branch=master)](https://github.com/ivre/ivre/actions/workflows/mongodb.yml/?branch=master)
+[![PostgreSQL tests](https://github.com/ivre/ivre/actions/workflows/postgres.yml/badge.svg?branch=master)](https://github.com/ivre/ivre/actions/workflows/postgres.yml/?branch=master)
+[![Maxmind tests](https://github.com/ivre/ivre/actions/workflows/maxmind.yml/badge.svg?branch=master)](https://github.com/ivre/ivre/actions/workflows/maxmind.yml/?branch=master)
+[![Linting tests](https://github.com/ivre/ivre/actions/workflows/linting.yml/badge.svg?branch=master)](https://github.com/ivre/ivre/actions/linting/mongodb.yml/?branch=master)
+[![Documentation Status](https://readthedocs.org/projects/ivre/badge/?version=latest)](https://doc.ivre.rocks/en/latest/?badge=latest)
 
 # IVRE #
 
 <img align="right" src="https://ivre.rocks/logo.png" alt="Logo"/> IVRE
 (Instrument de veille sur les réseaux extérieurs) or DRUNK (Dynamic
 Recon of UNKnown networks) is a network recon framework, including
-tools for passive recon (flow analytics relying on
-[Zeek](https://zeek.org/), [Argus](http://qosient.com/argus/),
-[Nfdump](https://github.com/phaag/nfdump), and active recon (IVRE uses
-[Nmap](http://nmap.org/) to run scans; IVRE can also import XML output
-from Nmap and
-[Masscan](https://github.com/robertdavidgraham/masscan)), and JSON
-output from [ZGrab2](https://github.com/zmap/zgrab2) and
-[ZDNS](https://github.com/zmap/zdns/).
+tools for passive and active recon. IVRE can use data from:
+
+- Passive tools:
+  - [Zeek](https://zeek.org/)
+  - [Argus](http://qosient.com/argus/)
+  - [Nfdump](https://github.com/phaag/nfdump)
+  - [p0f](https://lcamtuf.coredump.cx/p0f3/)
+  - [airodump-ng](https://www.aircrack-ng.org/)
+- Active tools:
+  - [Nmap](https://nmap.org/)
+  - [Masscan](https://github.com/robertdavidgraham/masscan)
+  - [ZGrab2](https://github.com/zmap/zgrab2)
+  - [ZDNS](https://github.com/zmap/zdns)
+  - [Nuclei](https://nuclei.projectdiscovery.io/)
+  - [httpx](https://github.com/projectdiscovery/httpx)
+  - [dnsx](https://github.com/projectdiscovery/dnsx)
+  - [tlsx](https://github.com/projectdiscovery/tlsx)
+  - [Dismap](https://github.com/zhzyker/dismap/)
 
 The advertising slogans are:
 
 -   (in French): IVRE, il scanne Internet.
 -   (in English): Know the networks, get DRUNK!
+-   (in Latin): Nunc est bibendum.
 
 The names IVRE and DRUNK have been chosen as a tribute to "Le
 Taullier".
@@ -54,6 +71,18 @@ under `/doc/`.
 On a system with IVRE installed, you can use a `--help` option with
 most IVRE CLI tools, and `help(ivre.module)` with most IVRE Python
 sub-modules.
+
+## MCP server ##
+
+IVRE ships an [MCP](https://modelcontextprotocol.io/) (Model Context
+Protocol) server that exposes the database to LLM agents. Install
+with `pip install 'ivre[mcp]'` and run `ivre mcp-server`.
+
+See [`doc/usage/mcp-server.rst`](doc/usage/mcp-server.rst) for client
+configuration (Claude Code, Claude Desktop, Cursor, OpenCode, VS Code,
+Windsurf, JetBrains) and
+[`doc/dev/mcp-plugins.rst`](doc/dev/mcp-plugins.rst) to extend the
+server with additional tools.
 
 ## License ##
 
@@ -97,11 +126,11 @@ can provide a server to run scans, please contact the author.
 ## Contact ##
 
 For both support and contribution, the
-[repository](https://github.com/cea-sec/ivre) on Github should be
+[repository](https://github.com/ivre/ivre) on Github should be
 used: feel free to create a new issue or a pull request!
 
 You can also join the
-[Gitter conversation](https://gitter.im/cea-sec/ivre) (that is the
+[Gitter conversation](https://gitter.im/ivre/ivre) (that is the
 preferred way to get in touch for questions), or use the e-mail `dev`
 on the domain `ivre.rocks`.
 
@@ -111,20 +140,18 @@ on the domain `ivre.rocks`.
 
 If you are using IVRE in you research, please cite it as follows:
 
-Pierre Lalet, Florent Monjalet, Camille Mougey, Vincent Ruello and
-Vivien Venuti. *IVRE, a network recon framework*.
-[https://github.com/cea-sec/ivre](https://github.com/cea-sec/ivre),
-2011-2020.
+IVRE contributors. *IVRE, a network recon framework*.
+[https://github.com/ivre/ivre](https://github.com/ivre/ivre),
+2011-2026.
 
 Here is the appropriate bibtex entry:
 
     @MISC{ivre,
         title = {{IVRE}, a network recon framework},
-        author={Lalet, Pierre and Monjalet, Florent and Mougey, Camille and Ruello, Vincent and Venuti, Viven},
+        author={IVRE contributors},
         url = {https://ivre.rocks/},
-        howpublished = {\url{https://github.com/cea-sec/ivre/}},
-        institution = {{CEA}: the French Alternative Energies and Atomic Energy Commission},
-        year = {2011--2020},
+        howpublished = {\url{https://github.com/ivre/ivre/}},
+        year = {2011--2026},
     }
 
 ### Technical documents & blog posts ###
@@ -132,7 +159,7 @@ Here is the appropriate bibtex entry:
 You can mention "IVRE, a network recon framework", together with the
 project homepage, [https://ivre.rocks/](https://ivre.rocks/) and/or
 the repository,
-[https://github.com/cea-sec/ivre](https://github.com/cea-sec/ivre).
+[https://github.com/ivre/ivre](https://github.com/ivre/ivre).
 
 On twitter, you can follow and/or mention
 [@IvreRocks](https://twitter.com/IvreRocks).

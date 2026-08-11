@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 """Support for NetFlow files"""
 
 import datetime
-
+from typing import Any, BinaryIO, cast
 
 from ivre import utils
 from ivre.parser import CmdParser
@@ -42,17 +42,17 @@ class NetFlow(CmdParser):
         ("bytes2", "%ibyt"),
         ("flags", "%flg"),
     ]
-    field_idx = dict((fld, idx) for idx, (fld, _) in enumerate(fields))
-    fmt = 'fmt:' + ','.join(fmt for _, fmt in fields)
+    field_idx = {fld: idx for idx, (fld, _) in enumerate(fields)}
+    fmt = f"fmt:{','.join((fmt for _, fmt in fields))}"
     units = {
-        'K': 1000,
-        'M': 1000000,
-        'G': 1000000000,
-        'T': 1000000000000,
+        "K": 1000,
+        "M": 1000000,
+        "G": 1000000000,
+        "T": 1000000000000,
     }
-    timefmt = '%Y-%m-%d %H:%M:%S.%f'
+    timefmt = "%Y-%m-%d %H:%M:%S.%f"
 
-    def __init__(self, fdesc, pcap_filter=None):
+    def __init__(self, fdesc: str | BinaryIO, pcap_filter: str | None = None) -> None:
         """Creates the NetFlow object.
 
         fdesc: a file-like object or a filename
@@ -62,29 +62,30 @@ class NetFlow(CmdParser):
         cmd = ["nfdump", "-aq", "-o", self.fmt]
         cmdkargs = {}
         if isinstance(fdesc, str):
-            with open(fdesc, 'rb') as fde:
+            with open(fdesc, "rb") as fde:
                 if fde.read(2) not in utils.FileOpener.FILE_OPENERS_MAGIC:
                     cmd.extend(["-r", fdesc])
                 else:
-                    cmdkargs["stdin"] = utils.open_file(fdesc)
+                    cmdkargs["stdin"] = cast(BinaryIO, utils.open_file(fdesc))
         else:
             cmdkargs["stdin"] = fdesc
         if pcap_filter is not None:
             cmd.append(pcap_filter)
-        super(NetFlow, self).__init__(cmd, cmdkargs)
+        super().__init__(cmd, cmdkargs)
 
     @classmethod
-    def str2int(cls, val):
+    def str2int(cls, val: str) -> int:
         try:
             return int(val)
         except ValueError:
             return int(float(val[:-1]) * cls.units[val[-1]])
 
     @classmethod
-    def parse_line(cls, line):
-        fields = dict((name[0], val.strip())
-                      for name, val in zip(cls.fields,
-                                           line.decode().split(",")))
+    def parse_line(cls, line: bytes) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            name[0]: val.strip()
+            for name, val in zip(cls.fields, line.decode().split(","))
+        }
         fields["proto"] = fields["proto"].lower()
         srv_idx = None
         if fields["proto"] == "icmp":
@@ -92,10 +93,11 @@ class NetFlow(CmdParser):
             # flows, whereas switching to "8.0" makes it sane again.
             if fields["port2"] == "0.8":
                 fields["port2"] = "8.0"
-            fields["type"], fields["code"] = [int(x) for x in
-                                              fields.pop("port2").split(".")]
+            fields["type"], fields["code"] = [
+                int(x) for x in fields.pop("port2").split(".")
+            ]
             # ICMP 0 is an answer to ICMP 8
-            if fields["type"] == 0:
+            if not fields["type"]:
                 fields["type"] = 8
                 srv_idx = 1
             else:
@@ -105,29 +107,30 @@ class NetFlow(CmdParser):
             for field in ["port1", "port2"]:
                 fields[field] = int(fields[field])
         for field in ["start_time", "end_time"]:
-            fields[field] = datetime.datetime.strptime(fields[field],
-                                                       cls.timefmt)
+            fields[field] = datetime.datetime.strptime(fields[field], cls.timefmt)
         if srv_idx is None:
             srv_idx = (
-                1 if
-                utils.guess_srv_port(fields["port1"], fields["port2"],
-                                     proto=fields["proto"]) >= 0
+                1
+                if utils.guess_srv_port(
+                    fields["port1"], fields["port2"], proto=fields["proto"]
+                )
+                >= 0
                 else 2
             )
         cli_idx = 1 if srv_idx == 2 else 2
-        fields["src"] = fields.pop("addr%d" % cli_idx)
-        fields["dst"] = fields.pop("addr%d" % srv_idx)
-        if "port%s" % cli_idx in fields:
-            fields["sport"] = fields.pop("port%d" % cli_idx)
-        if "port%s" % srv_idx in fields:
-            fields["dport"] = fields.pop("port%d" % srv_idx)
-            fields["flow_name"] = "%(proto)s %(dport)s" % fields
+        fields["src"] = fields.pop(f"addr{cli_idx}")
+        fields["dst"] = fields.pop(f"addr{srv_idx}")
+        if f"port{cli_idx}" in fields:
+            fields["sport"] = fields.pop(f"port{cli_idx}")
+        if f"port{srv_idx}" in fields:
+            fields["dport"] = fields.pop(f"port{srv_idx}")
+            fields["flow_name"] = f"{fields['proto']} {fields['dport']}"
         elif "type" in fields:
-            fields["flow_name"] = "%(proto)s %(type)s" % fields
+            fields["flow_name"] = f"{fields['proto']} {fields['type']}"
         else:
-            fields["flow_name"] = fields['proto']
-        fields["scbytes"] = cls.str2int(fields.pop("bytes%d" % cli_idx))
-        fields["scpkts"] = cls.str2int(fields.pop("pkts%d" % cli_idx))
-        fields["csbytes"] = cls.str2int(fields.pop("bytes%d" % srv_idx))
-        fields["cspkts"] = cls.str2int(fields.pop("pkts%d" % srv_idx))
+            fields["flow_name"] = fields["proto"]
+        fields["scbytes"] = cls.str2int(fields.pop(f"bytes{cli_idx}"))
+        fields["scpkts"] = cls.str2int(fields.pop(f"pkts{cli_idx}"))
+        fields["csbytes"] = cls.str2int(fields.pop(f"bytes{srv_idx}"))
+        fields["cspkts"] = cls.str2int(fields.pop(f"pkts{srv_idx}"))
         return fields

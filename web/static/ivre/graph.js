@@ -50,8 +50,7 @@ var Graph = (function() {
 	    this.container.css("display", "inline");
 	    $.ajax({
 		url: this.get_url(),
-		jsonp: "callback",
-		dataType: "jsonp",
+		dataType: "json",
 		success: function(data) {
 		    graphobject.draw.call(graphobject, data);
 		}
@@ -176,6 +175,11 @@ var GraphTopValues = (function(_super) {
 	    else if(['cert.md5', 'cert.sha1', 'cert.sha256'].indexOf(field) !== -1) {
 		preparefilter = function(x) {
 		    return 'setparam(FILTER, "' + field + '", "' + x + '")';
+		};
+	    }
+	    else if(['cert.pubkey.md5', 'cert.pubkey.sha1', 'cert.pubkey.sha256'].indexOf(field) !== -1) {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "cert.pk' + field.substr(12) + '", "' + x + '")';
 		};
 	    }
 	    else if(field === 'asnum') {
@@ -412,6 +416,95 @@ var GraphTopValues = (function(_super) {
 	    else if(field === 'ike.notification') {
 		preparefilter = function(x) {
 		    return 'setparam(FILTER, "ike.notification", "' + x + '");';
+		};
+	    }
+	    else if(field === 'tag') {
+		prepareoutput = function(x) {
+		    if(x[1].length > 30) {
+			return x[0] + ' (' + x[1].substr(0, 30) + '...)';
+		    }
+		    else {
+			return x[0] + ' (' + x[1] + ')';
+		    }
+		};
+		preparetitle = function(x) {
+		    return x[1];
+		};
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "tag", "' + x[0] + ':' + x[1] + '");';
+		};
+	    }
+	    else if(field === 'tag.value') {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "tag", "' + x + '");';
+		};
+	    }
+	    else if(field.substr(0, 4) === 'tag:') {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "tag", "' + field.substr(4) + ':' + x + '");';
+		};
+	    }
+	    else if(field === 'httphdr') {
+		prepareoutput = function(x) {
+		    // https://stackoverflow.com/a/38530325
+		    return x[0].replace(/\b\w/g, l => l.toUpperCase()) + ': ' + x[1];
+		};
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "httphdr", "' + x[0] + ':' + x[1] + '");';
+		};
+	    }
+	    else if(field === 'httphdr.name') {
+		prepareoutput = function(x) {
+		    // https://stackoverflow.com/a/38530325
+		    return x.replace(/\b\w/g, l => l.toUpperCase());
+		};
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "httphdr", "' + x + '");';
+		};
+	    }
+	    else if(field.substr(0, 8) === 'httphdr:') {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "httphdr", "' + field.substr(8) + ':' + x + '");';
+		};
+	    }
+	    else if(field === 'httpapp') {
+		prepareoutput = function(x) {
+		    return x.join(" ");
+		};
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "httpapp", "' + x[0] + ':' + x[1] + '");';
+		};
+	    }
+	    else if(field.substr(0, 8) === 'httpapp:') {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "httpapp", "' + field.substr(8) + ':' + x + '");';
+		};
+	    }
+	    else if(field == "ja3-client" || field.substr(0, 11) == "ja3-client.") {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "ssl-ja3-client", "' + x + '");';
+		};
+	    }
+	    else if(field == "jarm" || field.substr(0, 5) == "jarm:") {
+		// TODO: use port when it exists, not implemented in
+		// .searchjarm() for now
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "ssl-jarm", "' + x + '");';
+		};
+	    }
+	    else if(field == "hassh" || field.substr(0, 6) == "hassh.") {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "hassh", "' + x + '");';
+		};
+	    }
+	    else if(field == "hassh-client" || field.substr(0, 13) == "hassh-client.") {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "hassh-client", "' + x + '");';
+		};
+	    }
+	    else if(field == "hassh-server" || field.substr(0, 13) == "hassh-server.") {
+		preparefilter = function(x) {
+		    return 'setparam(FILTER, "hassh-server", "' + x + '");';
 		};
 	    }
 

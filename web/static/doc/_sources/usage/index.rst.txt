@@ -8,6 +8,9 @@ Usage
   use-cases
   active-recon
   passive
-  flow 
+  flow
+  iprange
   web-ui
+  web-auth
   kibana
+  mcp-server

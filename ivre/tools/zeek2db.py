@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,18 +18,22 @@
 
 """Update the flow database from Zeek logs"""
 
-
-from argparse import ArgumentParser
 import os
+from argparse import ArgumentParser
+from collections.abc import Callable, Iterable
+from sys import stdin
+from typing import Any, BinaryIO
 
-
-from ivre.parser.zeek import ZeekFile
+from ivre import config, flow, utils
 from ivre.db import db
-from ivre import config, utils, flow
+from ivre.parser.zeek import ZeekFile
+from ivre.types import Record
+from ivre.types.flow import Bulk
+from ivre.utils import recursive_filelisting
 
 
-def _zeek2flow(rec):
-    """Prepares a document for db.flow.*add_flow()."""
+def _zeek2flow(rec: dict[str, Any]) -> Record:
+    """Prepares a document"""
     if "id_orig_h" in rec:
         rec["src"] = rec.pop("id_orig_h")
     elif "pkt_src" in rec:
@@ -40,35 +44,35 @@ def _zeek2flow(rec):
         rec["dst"] = rec.pop("pkt_dst")
     if "ts" in rec:
         rec["start_time"] = rec["end_time"] = rec.pop("ts")
-    if rec.get('proto', None) == 'icmp':
+    if rec.get("proto", None) == "icmp":
         # FIXME incorrect: source & dest flow?
-        rec['type'], rec['code'] = rec.pop('id_orig_p'), rec.pop('id_resp_p')
-    elif 'id_orig_p' in rec and 'id_resp_p' in rec:
-        rec['sport'], rec['dport'] = rec.pop('id_orig_p'), rec.pop('id_resp_p')
+        rec["type"], rec["code"] = rec.pop("id_orig_p"), rec.pop("id_resp_p")
+    elif "id_orig_p" in rec and "id_resp_p" in rec:
+        rec["sport"], rec["dport"] = rec.pop("id_orig_p"), rec.pop("id_resp_p")
     return rec
 
 
-def arp2flow(bulk, rec):
-    rec['proto'] = 'arp'
-    db.flow.any2flow(bulk, 'arp', rec)
+def arp2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "arp"
+    db.flow.any2flow(bulk, "arp", rec)
 
 
-def http2flow(bulk, rec):
-    rec['proto'] = 'tcp'
-    db.flow.any2flow(bulk, 'http', rec)
+def http2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "tcp"
+    db.flow.any2flow(bulk, "http", rec)
 
 
-def ssh2flow(bulk, rec):
-    rec['proto'] = 'tcp'
-    db.flow.any2flow(bulk, 'ssh', rec)
+def ssh2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "tcp"
+    db.flow.any2flow(bulk, "ssh", rec)
 
 
-def _sip_paths_search_tcp(paths):
+def _sip_paths_search_tcp(paths: Iterable[str]) -> bool:
     """
     Fills the given proto_dict with transport protocol info found in path
     """
     for elt in paths:
-        info = elt.split(' ')[0].split('/')
+        info = elt.split(" ")[0].split("/")
         if len(info) != 3:
             continue
         if info[2].lower() in ["tcp", "tls"]:
@@ -76,33 +80,33 @@ def _sip_paths_search_tcp(paths):
     return False
 
 
-def sip2flow(bulk, rec):
-    found_tcp = (_sip_paths_search_tcp(rec['response_path']) or
-                 _sip_paths_search_tcp(rec['request_path']))
+def sip2flow(bulk: Bulk, rec: Record) -> None:
+    found_tcp = _sip_paths_search_tcp(rec["response_path"]) or _sip_paths_search_tcp(
+        rec["request_path"]
+    )
     rec["proto"] = "tcp" if found_tcp else "udp"
-    db.flow.any2flow(bulk, 'sip', rec)
+    db.flow.any2flow(bulk, "sip", rec)
 
 
-def snmp2flow(bulk, rec):
-    rec['proto'] = 'udp'
-    db.flow.any2flow(bulk, 'snmp', rec)
+def snmp2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "udp"
+    db.flow.any2flow(bulk, "snmp", rec)
 
 
-def ssl2flow(bulk, rec):
-    rec['proto'] = 'tcp'  # FIXME Is it always true?
-    db.flow.any2flow(bulk, 'ssl', rec)
+def ssl2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "tcp"  # FIXME Is it always true?
+    db.flow.any2flow(bulk, "ssl", rec)
 
 
-def rdp2flow(bulk, rec):
-    rec['proto'] = 'tcp'  # FIXME Is it always true?
-    db.flow.any2flow(bulk, 'rdp', rec)
+def rdp2flow(bulk: Bulk, rec: Record) -> None:
+    rec["proto"] = "tcp"  # FIXME Is it always true?
+    db.flow.any2flow(bulk, "rdp", rec)
 
 
-def dns2flow(bulk, rec):
-    rec['answers'] = [elt.lower() for elt in
-                      (rec['answers'] if rec['answers'] else [])]
-    rec['query'] = rec['query'].lower() if rec['query'] else None
-    db.flow.any2flow(bulk, 'dns', rec)
+def dns2flow(bulk: Bulk, rec: Record) -> None:
+    rec["answers"] = [elt.lower() for elt in (rec["answers"] if rec["answers"] else [])]
+    rec["query"] = rec["query"].lower() if rec["query"] else None
+    db.flow.any2flow(bulk, "dns", rec)
 
 
 FUNCTIONS = {
@@ -118,45 +122,62 @@ FUNCTIONS = {
 }
 
 
-def any2flow(name):
-    def inserter(bulk, rec):
-        return db.flow.any2flow(bulk, name, rec)
+def any2flow(name: str) -> Callable[[Bulk, Record], None]:
+    def inserter(bulk: Bulk, rec: Record) -> None:
+        db.flow.any2flow(bulk, name, rec)
+
     return inserter
 
 
-def main():
-    """Update the flow database from Zeek logs"""
+def build_parser() -> ArgumentParser:
+    """Build the argument parser for this tool."""
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("logfiles", nargs='*', metavar='FILE',
-                        help="Zeek log files")
-    parser.add_argument("-v", "--verbose", help="verbose mode",
-                        action="store_true")
-    parser.add_argument("-C", "--no-cleanup",
-                        help="avoid port cleanup heuristics",
-                        action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("files", nargs="*", metavar="FILE", help="Zeek log files")
+    parser.add_argument("-v", "--verbose", help="verbose mode", action="store_true")
+    parser.add_argument(
+        "-C", "--no-cleanup", help="avoid port cleanup heuristics", action="store_true"
+    )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Import all files from given directories.",
+    )
+    return parser
+
+
+def main() -> None:
+    """Update the flow database from Zeek logs"""
+    args = build_parser().parse_args()
 
     if args.verbose:
         config.DEBUG = True
+    files: Iterable[BinaryIO | str]
 
-    for fname in args.logfiles:
-        if not os.path.exists(fname):
+    if not args.files:
+        files = [stdin.buffer]
+    elif args.recursive:
+        files = recursive_filelisting(args.files)
+    else:
+        files = args.files
+
+    for fname in files:
+        if isinstance(fname, str) and not os.path.exists(fname):
             utils.LOGGER.error("File %r does not exist", fname)
             continue
         with ZeekFile(fname) as zeekf:
             bulk = db.flow.start_bulk_insert()
-            utils.LOGGER.debug("Parsing %s\n\t%s", fname,
-                               "Fields:\n%s\n" % "\n".join(
-                                   "%s: %s" % (f, t)
-                                   for f, t in zeekf.field_types
-                               ))
+            utils.LOGGER.debug(
+                "Parsing %s\n\t%s",
+                fname,
+                f"Fields:\n{'\n'.join(f'{f.decode()}: {t.decode()}' for f, t in zeekf.field_types)}\n",
+            )
             if zeekf.path in FUNCTIONS:
                 func = FUNCTIONS[zeekf.path]
             elif zeekf.path in flow.META_DESC:
                 func = any2flow(zeekf.path)
             else:
-                utils.LOGGER.debug("Log format not (yet) supported for %r",
-                                   fname)
+                utils.LOGGER.debug("Log format not (yet) supported for %r", fname)
                 continue
             for line in zeekf:
                 if not line:

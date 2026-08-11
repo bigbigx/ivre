@@ -1,8 +1,7 @@
 #! /usr/bin/env python
-# -*- coding: utf-8 -*-
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -20,21 +19,29 @@
 
 """This sub-module builds graphs of traceroute results."""
 
-
 # to build graphs with rtgraph3d
 try:
-    import dbus
-    import dbus.mainloop.glib
+    import dbus  # type: ignore
+    import dbus.mainloop.glib  # type: ignore
+
     HAVE_DBUS = True
 except ImportError:
     HAVE_DBUS = False
-
+import hashlib
+from collections.abc import Callable, Iterable
+from typing import Any, TextIO
 
 from ivre import utils
 
+Graph = dict[str, set[str]]
 
-def buildgraph(cursor, include_last_hop=False, include_target=False,
-               only_connected=True):
+
+def buildgraph(
+    cursor: Iterable[dict[str, Any]],
+    include_last_hop: bool = False,
+    include_target: bool = False,
+    only_connected: bool = True,
+) -> tuple[Graph, set[str]]:
     """Builds a graph (a dict object, {node: [dest nodes]}) by getting
     host documents from the database `cursor`, including (or not) the
     last hop and the target (for each host).
@@ -45,30 +52,37 @@ def buildgraph(cursor, include_last_hop=False, include_target=False,
     present.
 
     """
-    graph = {}
-    entry_nodes = set()
+    graph: Graph = {}
+    entry_nodes: set[str] = set()
     for host in cursor:
-        if 'traces' not in host:
+        if "traces" not in host:
             continue
-        for trace in host['traces']:
-            hops = trace['hops']
-            hops.sort(key=lambda hop: hop['ttl'])
+        for trace in host["traces"]:
+            hops = trace["hops"]
+            hops.sort(key=lambda hop: hop["ttl"])
             if not hops:
                 continue
-            entry_nodes.add(hops[0]['ipaddr'])
+            entry_nodes.add(hops[0]["ipaddr"])
             if not include_last_hop and not include_target:
-                if hops[-1]['ipaddr'] == host['addr']:
+                if hops[-1]["ipaddr"] == host["addr"]:
                     hops.pop()
                 if not include_last_hop:
                     hops.pop()
             for i, hop in enumerate(hops[1:]):
-                if (not only_connected) or (hop['ttl'] - hops[i]['ttl'] == 1):
-                    graph.setdefault(hops[i]['ipaddr'],
-                                     set()).update([hop['ipaddr']])
+                if (not only_connected) or (hop["ttl"] - hops[i]["ttl"] == 1):
+                    graph.setdefault(hops[i]["ipaddr"], set()).update([hop["ipaddr"]])
     return graph, entry_nodes
 
 
-def writedotgraph(graph, out, cluster=None):
+def label(node: str) -> str:
+    return hashlib.new("sha256", node.encode()).hexdigest()
+
+
+def writedotgraph(
+    graph: Graph,
+    out: TextIO,
+    cluster: Callable[[str], str | tuple[int | str, str] | None] | None = None,
+) -> None:
     """From a graph produced by buildgraph(), produces an output in
     the (Graphiz) Dot format.
 
@@ -79,46 +93,54 @@ def writedotgraph(graph, out, cluster=None):
     strings (label, name).
 
     """
-    out.write('digraph traceroute {\n')
+    out.write("digraph traceroute {\n")
     nodes = set()
     edges = set()
     if cluster is None:
-        def _add_node(node):
-            if node not in nodes:
-                nodes.add(node)
-                out.write('\t%d [label="%s"];\n' % (node, utils.int2ip(node)))
-    else:
-        clusters = {}
 
-        def _add_node(node):
+        def _add_node(node: str) -> None:
             if node not in nodes:
                 nodes.add(node)
+                out.write(f'\t"{label(node)}" [label="{node}"];\n')
+
+    else:
+        clusters: dict[str | tuple[int | str, str] | None, set[str]] = {}
+
+        def _add_node(node: str) -> None:
+            if node not in nodes:
+                nodes.add(node)
+                assert cluster is not None
                 clusters.setdefault(cluster(node), set()).update([node])
+
     for node, node_edges in graph.items():
         _add_node(node)
         for destnode in node_edges:
             _add_node(destnode)
             if (node, destnode) not in edges:
-                out.write("\t%d -> %d;\n" % (node, destnode))
+                out.write(f'\t"{label(node)}" -> "{label(destnode)}";\n')
                 edges.add((node, destnode))
     if cluster is not None:
         if None in clusters:
             for node in clusters.pop(None):
-                out.write('\t%d [label="%s"];\n' % (node, utils.int2ip(node)))
+                out.write(f'\t"{label(node)}" [label="{node}"];\n')
         for clu, nodes in clusters.items():
+            clu_data: tuple[int | str, str]
             if isinstance(clu, str):
-                clu = (clu, clu)
-            out.write('\tsubgraph cluster_%s {\n' % clu[0])
-            out.write('\t\tlabel = "%s";\n' % clu[1])
+                clu_data = (clu, clu)
+            else:
+                assert clu is not None  # None value has been .pop()ed
+                clu_data = clu
+            out.write(f"\tsubgraph cluster_{clu_data[0]} {{\n")
+            out.write(f'\t\tlabel = "{clu_data[1]}";\n')
             for node in nodes:
-                out.write('\t\t%d [label="%s"];\n' % (node,
-                                                      utils.int2ip(node)))
-            out.write('\t}\n')
-    out.write('}\n')
+                out.write(f'\t\t"{label(node)}" [label="{node}"];\n')
+            out.write("\t}\n")
+    out.write("}\n")
 
 
 if HAVE_DBUS:
-    def display3dgraph(graph, reset_world=True):
+
+    def display3dgraph(graph: Graph, reset_world: bool = True) -> dbus.Interface:
         """Send the graph (produced by buildgraph()) to a running
         rtgraph3d instance.
 
@@ -134,8 +156,7 @@ if HAVE_DBUS:
                 if destnode == node:
                     continue
                 try:
-                    graph3d.new_edge(utils.int2ip(node), {},
-                                     utils.int2ip(destnode), {})
+                    graph3d.new_edge(node, {}, destnode, {})
                 except Exception:
-                    utils.LOGGER.warning('Exception', exc_info=True)
+                    utils.LOGGER.warning("Exception", exc_info=True)
         return graph3d

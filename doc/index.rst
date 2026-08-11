@@ -13,17 +13,48 @@ response, monitoring, etc.
 
 - Web site: `https://ivre.rocks/ <https://ivre.rocks/>`_
 - Twitter: `@IvreRocks <https://twitter.com/IvreRocks>`_
-- Github: `cea-sec/ivre <https://github.com/cea-sec/ivre/>`_
+- Mastodon: `@ivre@infosec.exchange <https://infosec.exchange/@ivre>`_
+- Github: `ivre/ivre <https://github.com/ivre/ivre/>`_
 
 Features
 --------
 
-IVRE can aggregate `Nmap <http://nmap.org/>`_, `Masscan
-<https://github.com/robertdavidgraham/masscan/>`_ & `Zgrab / Zgrab2
-<https://zmap.io/>`_ scan results as well as intelligence from network
-captures using `Zeek <https://www.zeek.org/>`_ (formerly known as
-Bro), `Argus <http://qosient.com/argus/>`_ and `Nfdump
-<http://nfdump.sourceforge.net/>`_
+IVRE can aggregate scan results as well as intelligence from network
+captures. It accepts results from several tools:
+
+- Active recon (network scanners):
+
+    - `Nmap <http://nmap.org/>`_
+
+    - `Masscan <https://github.com/robertdavidgraham/masscan/>`_
+
+    - `Dismap <https://github.com/zhzyker/dismap/>`_
+
+    - Tools from the `ZMap project <https://zmap.io/>`_:
+
+        - `Zgrab2 <https://github.com/zmap/zgrab2/>`_
+        - `ZDNS <https://github.com/zmap/zdns/>`_
+
+    - Tools from the `Project Discovery <https://projectdiscovery.io/>`_:
+
+        - `Nuclei <https://github.com/projectdiscovery/nuclei/>`_
+        - `Httpx <https://github.com/projectdiscovery/httpx/>`_
+        - `Tlsx <https://github.com/projectdiscovery/tlsx/>`_
+        - `Dnsx <https://github.com/projectdiscovery/dnsx/>`_
+
+    - Tools shipped with the IVRE project:
+
+        - ``ivre auditdom`` (DNS audit)
+        - ``ivre localscan`` (fake Nmap scan result produced from
+          local commands (``ip`` and ``ss``)
+
+- Passive recon (from network traffic and/or captures):
+
+    - `Zeek <https://www.zeek.org/>`_ (formerly known as Bro)
+    - `p0f <https://lcamtuf.coredump.cx/p0f3/>`_
+    - `airodump-ng <https://www.aircrack-ng.org/>`_
+    - `Argus <http://qosient.com/argus/>`_
+    - `Nfdump <http://nfdump.sourceforge.net/>`_
 
 Use-cases
 ---------
@@ -72,16 +103,19 @@ Contact
 -------
 
 For both support and contribution, the `repository
-<https://github.com/cea-sec/ivre>`__ on Github should be used: feel
-free to create a new issue or a pull request!
+<https://github.com/ivre/ivre>`__ on Github should be used: feel free
+to create a new issue or a pull request!
 
 You can also join the `Gitter conversation
-<https://gitter.im/cea-sec/ivre>`_ (that is the preferred way to get
-in touch for questions), or use the e-mail ``dev`` on the domain
+<https://gitter.im/ivre/ivre>`_ (that is the preferred way to get in
+touch for questions), or use the e-mail ``dev`` on the domain
 ``ivre.rocks``.
 
 On Twitter, you can follow and/or mention `@IvreRocks
 <https://twitter.com/IvreRocks>`__.
+
+On Mastodon, you can follow and/or mention `@ivre@infosec.exchange
+<https://infosec.exchange/@ivre>`__.
 
 Content
 -------

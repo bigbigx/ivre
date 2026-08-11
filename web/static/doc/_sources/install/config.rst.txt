@@ -54,8 +54,8 @@ Here are some examples:
 
 .. code:: python
 
-   DB_PASSIVE = "sqlite:////tmp/ivre.db"
-   DB_NMAP = "postgresql://ivre@localhost/ivre"
+   DB_PASSIVE = "postgresql://ivre@localhost/ivre"
+   DB_NMAP = "mongodb:///ivre"
    DB_VIEW = "elastic://192.168.0.1:9200/ivre"
    DB_DATA = "maxmind:///share/data/ivre/geoip"
 
@@ -68,9 +68,9 @@ Batch insert or upsert operations can be tuned using backend-specific variables:
 Paths and commands
 ------------------
 
-All variables ending with ``_PATH`` (except ``AGENT_MASTER_PATH`` and
-``NMAP_SHARE_PATH``) default to ``None``, a special value which means
-"try to guess the path based on IVRE installation".
+All variables ending with ``_PATH`` (except ``NMAP_SHARE_PATH``)
+default to ``None``, a special value which means "try to guess the
+path based on IVRE installation".
 
 Here are the values with examples on a regular installation:
 
@@ -82,8 +82,6 @@ Here are the values with examples on a regular installation:
    WEB_STATIC_PATH = None            # /usr/share/ivre/web/static
    WEB_DOKU_PATH = None              # /usr/share/ivre/dokuwiki
 
-``AGENT_MASTER_PATH`` defaults to ``"/var/lib/ivre/master"``.
-
 ``NMAP_SHARE_PATH`` defaults to ``None``, which means IVRE will try
 ``"/usr/local/share/nmap"``, ``"/opt/nmap/share/nmap"``, then
 ``"/usr/share/nmap"``.
@@ -94,54 +92,23 @@ IVRE may need some executables:
    :start-after: Begin commands
    :end-before: End commands
 
-Nmap scan templates
--------------------
+Masscan probes
+--------------
 
-Nmap scan templates are defined in the ``NMAP_SCAN_TEMPLATES``
-variable. Usually, this variable should **not** be overridden, but
-rather modified.
+IVRE can use the service fingerprint database from Nmap to find
+service and product names from Masscan results. For that, IVRE needs
+to know which probe (or "hello string") has been used. This depends on
+Masscan source code (compile-time) and options (run-time). You can
+adjust what IVRE will use per port (from the configuration) or
+globally (from the command-line option).
 
-By default, ``NMAP_SCAN_TEMPLATES`` contains one template, named
-``"default"``, which is defined as follows:
+The default configuration value is based on the Masscan fork of the
+IVRE project.
 
 .. literalinclude:: ../../ivre/config.py
-   :start-after: Begin default Nmap scan template
-   :end-before: End default Nmap scan template
+   :start-after: Begin Masscan probes
+   :end-before: End Masscan probes
 
-To create another template, the easiest is to copy, either using
-``.copy()`` or using the ``dict()`` constructor, the ``"default"``
-template; the following configuration entry creates an
-``"aggressive"`` template that will run more scripts (including
-potentially dangerous ones) and have more permissive timeout values:
-
-.. code:: python
-
-   NMAP_SCAN_TEMPLATES["aggressive"] = dict(
-       NMAP_SCAN_TEMPLATES["default"],
-       host_timeout="30m",
-       script_timeout="5m",
-       scripts_categories=['default', 'discovery', 'auth', 'brute',
-                           'exploit', 'intrusive'],
-       scripts_exclude=['broadcast', 'external'],
-   )
-
-It is possible to check the options a template will use by running the
-following command (the output has been modified, the command line is
-normally on one single line):
-
-::
-
-   $ ivre runscans --output CommandLine
-   Command line to run a scan with template default
-       nmap -A -PS -PE -sS -vv --host-timeout 15m --script-timeout 2m
-            --script '(default or discovery or auth) and not (broadcast
-            or brute or dos or exploit or external or fuzzer or intrusive)'
-
-   $ ivre runscans --output CommandLine --nmap-template aggressive
-   Command line to run a scan with template aggressive
-       nmap -A -PS -PE -sS -vv --host-timeout 30m --script-timeout 5m
-            --script '(default or discovery or auth or brute or exploit or
-            intrusive) and not (broadcast or external)'
 
 The ``flow`` purpose
 --------------------
@@ -157,7 +124,8 @@ their default values:
 The ``data`` purpose
 --------------------
 
-The URLs used to get IP address databases are set in the dictionary ``IPDATA_URLS``:
+The URLs used to get IP address databases are set in the dictionary
+``IPDATA_URLS``:
 
 .. literalinclude:: ../../ivre/config.py
    :start-after: Begin IPDATA_URLS
@@ -174,6 +142,38 @@ Paths
 
 Two variables (``WEB_STATIC_PATH`` and ``WEB_DOKU_PATH``) are used for
 the Web application; see :ref:`install/config:Paths and commands`.
+
+Modules
+~~~~~~~
+
+The Web UI exposes a fixed set of *data sections* — ``view``,
+``active``, ``passive``, ``dns``, ``rir``, ``flow`` — each backed
+by one (or, for ``dns``, two) ``DB_<purpose>`` backends. By
+default every section whose backend is configured is exposed; the
+React UI hides the others from the section nav and the matching
+``/cgi/`` routes return 404.
+
+Operators who want to narrow the exposed set further (for
+example, hide ``flow`` even though ``DB_FLOW`` is wired) can set
+``WEB_MODULES`` to an iterable of module names:
+
+.. code:: python
+
+   # Expose only the View and RIR sections; the others are
+   # hidden from the nav and their routes return 404 even if
+   # their backends are configured.
+   WEB_MODULES = ["view", "rir"]
+
+Leaving ``WEB_MODULES`` at its default (``None``) is equivalent
+to listing every known module — the effective set is then exactly
+the modules whose ``DB_<purpose>`` backend is configured. The
+``dns`` module is the only cross-backend one: it is exposed as
+soon as either ``DB_NMAP`` or ``DB_PASSIVE`` is configured.
+
+Account / admin pages (the ``Admin`` page and the self-service
+``API keys`` page) are *not* part of ``WEB_MODULES``; they keep
+their own toggles (``WEB_AUTH_ENABLED`` plus the ``is_admin``
+flag on the user account).
 
 Notepad
 ~~~~~~~
@@ -232,10 +232,16 @@ the IVRE application; for example:
 
 Authentication and ACLs
 ~~~~~~~~~~~~~~~~~~~~~~~
-   
-If you want to use an authentication in IVRE, you have to configure
-your Web server (e.g., Apache or Nginx) to do so and set the
-environment variable ``REMOTE_USER`` to the username.
+
+If you want to use an authentication in IVRE, you have two options:
+
+- configure your Web server (e.g., Apache or Nginx) to handle the
+  authentication and set the environment variable ``REMOTE_USER`` to
+  the username.
+
+- use one (or more) OAuth providers for authentication, Magic Links
+  (via email) and API keys. See :doc:`/usage/web-auth` for the
+  complete authentication documentation.
 
 If you want to do some authorization based on the authentication, you
 can do so by setting a couple of variables; by default, ACL is
@@ -290,7 +296,7 @@ all results in category ``site-a``:
    WEB_INIT_QUERIES = {
        '@admin.sitea': 'category:site-a',
    }
-   
+
 Misc
 ----
 

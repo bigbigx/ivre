@@ -8,8 +8,8 @@ You need to run `Zeek <https://www.zeek.org/>`_ (formerly known as
 Bro), version 3.0 minimum (tested with 3.0 and 3.1) with the option
 ``-b`` and the location of the ``passiverecon/bare.zeek`` file. If you
 want to run it on the ``eth0`` interface, for example, run (replace
-``/usr/share/ivre`` by the appropriate location; use ``python -c
-'import ivre.config; print(ivre.config.guess_prefix())'`` if you
+``/usr/share/ivre/zeek`` by the appropriate location; use ``python -c
+'import ivre.config; print(ivre.config.guess_prefix("zeek"))'`` if you
 cannot find it):
 
 ::
@@ -27,15 +27,12 @@ PCAP file), run:
    $ LOG_PATH=logs/passiverecon \
    >   zeek -b /usr/share/ivre/zeek/ivre/passiverecon/bare.zeek -r capture
 
-This will produce log files in the ``logs`` directory. You need to run a
-``ivre passivereconworker`` to process these files. You can try:
+This will produce log files in the ``logs`` directory. Pipe each
+generated log file into ``ivre passiverecon2db``:
 
 ::
 
-   $ ivre passivereconworker --directory=logs
-
-This program will not stop by itself. You can ``kill`` it, it will
-stop gently (as soon as it has finished to process the current file).
+   $ for f in logs/passiverecon.*; do ivre passiverecon2db < "$f"; done
 
 You can also send the data from ``zeek`` to the database without using
 intermediate files:
@@ -44,6 +41,15 @@ intermediate files:
 
    $ zeek -b /usr/share/ivre/zeek/ivre/passiverecon/bare.zeek [option] \
    >   | ivre passiverecon2db
+
+With p0f
+--------
+
+You need to install `p0f v3 <https://lcamtuf.coredump.cx/p0f3/>`_, and
+use it with the option ``-o`` to produce an output file. Then, provide
+that output file to ``ivre p0f2db``.
+
+For now, only ``syn`` and ``syn+ack`` modes are supported.
 
 Enjoying the results
 --------------------

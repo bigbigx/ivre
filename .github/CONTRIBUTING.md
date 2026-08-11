@@ -1,6 +1,6 @@
 # How to contribute
 
-You'll find here tips and advices to help you contribute to IVRE in
+You'll find here tips and advice to help you contribute to IVRE in
 the most efficient way.
 
 ## Project objectives
@@ -80,18 +80,23 @@ dependency makes it harder for users to install IVRE.
 
 We try to comply with the some guidelines for new code:
 
--   The code **must** be compatible with Python 3.6 to 3.9.
+-   The code **must** be compatible with Python 3.12 to 3.14.
 
 -   The code should be PEP-8 compliant; you can check your code with
     [pep8](https://pypi.python.org/pypi/pep8).
 
--   [Pylint](http://www.pylint.org/) can help you write good Python
+-   [Pylint](https://pylint.org/) can help you write good Python
     code (even if respecting Pylint rules is sometimes either too hard
     or even undesirable; human brain needed!).
 
--   [flake8](http://flake8.pycqa.org/) and Pylint tests are run for
-    each pull request (see .travis.yml for the specific options). Pull
-    requests will not be accepted when the tests fail.
+-   [Black](https://github.com/psf/black) has to be used to format
+    Python code in IVRE.
+
+-   [flake8](https://flake8.pycqa.org/),
+    [mypy](http://mypy-lang.org/), Black and Pylint tests are run for
+    each pull request (see `.github/workflows/linting.yml` for the
+    specific options). Pull requests will not be accepted when the
+    tests fail.
 
 -   [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
     is a nice read!

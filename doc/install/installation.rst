@@ -39,16 +39,13 @@ your needs:
 
 Python
 ~~~~~~
-  
-To install IVRE, you'll need `Python <http://www.python.org/>`__ 3.6
+
+To install IVRE, you'll need `Python <http://www.python.org/>`__ 3.12
 minimum, with the following modules:
 
 - `bottle <https://bottlepy.org/>`_.
 - `cryptography <https://cryptography.io/en/latest/>`_.
-- `pymongo <http://api.mongodb.org/python/>`_ version 2.7.2 minimum.
-- `tinydb <https://tinydb.readthedocs.io/>`_, to use the
-  **experimental** TinyDB backend (this does not require a database
-  server).
+- `pymongo <http://api.mongodb.org/python/>`_ version 4.10 minimum.
 - `sqlalchemy <http://www.sqlalchemy.org/>`_ and `psycopg2
   <http://initd.org/psycopg/>`_ to use the **experimental** PostgreSQL
   backend.
@@ -67,7 +64,7 @@ Databases
 ~~~~~~~~~
 
 IVRE's reference backend service is `MongoDB
-<https://www.mongodb.org/>`_, version 3.2 minimum. It is highly
+<https://www.mongodb.org/>`_, version 7.0 minimum. It is highly
 suggested that you use the latest stable release (the performances
 tend to improve a lot).
 
@@ -99,8 +96,8 @@ how to install and configure them.
 
 Configuration file samples are provided in IVRE's source repository,
 under ``pkg/apache`` and ``pkg/nginx``. Also, the
-:ref:`install/docker:Docker` creation files in ``docker/web`` and
-``docker/web-apache`` can provide useful examples.
+:ref:`install/docker:Docker` creation files in ``docker/web*`` can
+provide useful examples.
 
 If you do not want (or cannot) to install a Web server, you can try
 IVRE's integrated server, suited for tests or tiny installations. Just
@@ -120,10 +117,6 @@ The installation of IVRE itself can be done:
   `instructions
   <https://copr.fedorainfracloud.org/coprs/pessoft/IVRE/>`_.
 
-- On other RPM-based Linux distributions, you can easily build RPM
-  packages (using the provided ``pkg/buildrpm`` script, or use the
-  ``setup.py`` script with your own options).
-
 - On `Arch Linux <https://www.archlinux.org/>`_, there are `AUR
   <https://aur.archlinux.org/>`__ packages that can be installed using
   `yay <https://aur.archlinux.org/packages/yay/>`_ for example. The
@@ -139,9 +132,9 @@ The installation of IVRE itself can be done:
 
   These packages are based on the latest stable version; they all have
   a ``-git`` version, based on the current development code from the
-  `Github repository <https://github.com/cea-sec/ivre>`_. You can
-  install for example ``ivre-git`` and ``ivre-web-git`` if you want to
-  test the latest developments.
+  `Github repository <https://github.com/ivre/ivre>`_. You can install
+  for example ``ivre-git`` and ``ivre-web-git`` if you want to test
+  the latest developments.
 
   All the packages are based on the same bases: `ivre
   <https://aur.archlinux.org/pkgbase/ivre/>`__ and `ivre-git
@@ -156,8 +149,7 @@ The installation of IVRE itself can be done:
   <https://pypi.org/project/ivre>`_ and its Python dependencies from
   PyPI, the Python Package Index).
 
-- From the source code, using the ``setup.py`` (classical ``./setup.py
-  build; sudo ./setup.py install``) script.
+- From the source code, using ``pip install .``.
 
 - Using :ref:`install/docker:docker` (in this case you do not need to
   follow the instructions in
@@ -191,11 +183,10 @@ Initialization
 Once IVRE has been properly configured, it's time to initialize its
 databases.
 
-For that, the command-line tools (namely ``ivre ipinfo``, ``ivre
-scancli``, ``ivre view``, ``ivre flowcli`` and ``ivre
-runscansagentdb``, respectively for information about IP addresses,
-passive information, active information and running scans through
-agents) have a ``--init`` option.
+For that, the command-line tools (``ivre ipinfo``, ``ivre scancli``,
+``ivre view`` and ``ivre flowcli``, respectively for information about
+IP addresses, active scans, the merged view and traffic flows) all
+have a ``--init`` option.
 
 So you can run, with a user or from a host where the configuration has a
 write access to the database (add ``< /dev/null`` to skip the
@@ -207,7 +198,6 @@ confirmation):
    $ yes | ivre scancli --init
    $ yes | ivre view --init
    $ yes | ivre flowcli --init
-   $ yes | sudo ivre runscansagentdb --init
 
 Getting IP data
 ---------------
@@ -245,23 +235,4 @@ following files are downloaded:
    GeoLite2-ASN.tar.gz: https://ivre.rocks/data/geolite/GeoLite2-ASN.tar.gz
    GeoLite2-ASN-CSV.zip: https://ivre.rocks/data/geolite/GeoLite2-ASN-CSV.zip
    GeoLite2-dumps.tar.gz: https://ivre.rocks/data/geolite/GeoLite2-dumps.tar.gz
-   iso3166.csv: https://dev.maxmind.com/static/csv/codes/iso3166.csv
-   BGP.raw: http://thyme.apnic.net/current/data-raw-table
-
-
-Using Agents
-------------
-
-If you do not plan to run active scans with remote agents (where IVRE
-will not be installed), you can skip this section.
-
-The agent does not require IVRE to be installed. It is a script that
-needs to be adapted to each situation.
-
-The agent is only needed when you cannot install IVRE on the machine
-used to scan or when you want to use several machines to run one scan.
-
-It requires a POSIX environment, and the commands ``screen``,
-``rsync`` and ``nmap`` (of course). See the
-:ref:`install/agents:agents` documentation for more information about
-that.
+   BGP.raw: https://thyme.apnic.net/current/data-raw-table

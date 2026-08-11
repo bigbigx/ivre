@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -35,52 +35,56 @@
 """Support for Iptables log from syslog files."""
 
 import datetime
+from typing import Any
+
 from ivre.parser import Parser
+from ivre.utils import LOGGER
 
 
 class Iptables(Parser):
     """Iptables log generator from a syslog file descriptor."""
 
-    def __init__(self, fname, pcap_filter=None):
+    def __init__(self, fname: str, pcap_filter: str | None = None) -> None:
         """Init Ipatbles class."""
-        super(Iptables, self).__init__(fname)
+        if pcap_filter is not None:
+            LOGGER.warning("PCAP filter not supported in Iptables")
+        super().__init__(fname)
 
-    def parse_line(self, line):
+    def parse_line(self, line: bytes) -> dict[str, Any]:
         """Process current line in Parser.__next__."""
-        field_idx = line.find(b'IN=')
+        field_idx = line.find(b"IN=")
         if field_idx < 0:
             # It's not an iptables log
             return next(self)
 
         # Converts the syslog iptables log into hash
-        fields = dict(
-            (key.lower(), value)
-            for key, value in
-            (
-                val.split(b'=', 1)
-                if b'=' in val else (val, b'')
-                for val in line[field_idx:].rstrip(b'\r\n').split()
+        fields: dict[str, Any] = {
+            key.decode().lower(): value.decode()
+            for key, value in (
+                val.split(b"=", 1) if b"=" in val else (val, b"")
+                for val in line[field_idx:].rstrip(b"\r\n").split()
             )
-        )
+        }
 
         try:
-            fields[b'start_time'] = datetime.datetime.strptime(
-                line[:15].decode(), "%b %d %H:%M:%S")
+            fields["start_time"] = datetime.datetime.strptime(
+                line[:15].decode(), "%b %d %H:%M:%S"
+            )
         except ValueError:
             # Bad Date format
             return next(self)
 
         # sanitized
-        fields[b'proto'] = fields[b'proto'].lower()
+        fields["proto"] = fields["proto"].lower()
         # Rename fields according to flow2db specifications.
-        if fields[b'proto'] in (b'udp', b'tcp'):
-            fields[b'sport'] = int(fields[b'spt'])
-            fields[b'dport'] = int(fields[b'dpt'])
+        if fields["proto"] in ("udp", "tcp"):
+            fields["sport"] = int(fields.pop("spt"))
+            fields["dport"] = int(fields.pop("dpt"))
 
         # This data is mandatory but undefined in iptables logs, so make
         # a choice.
-        fields[b'cspkts'] = fields[b'scpkts'] = 0
-        fields[b'scbytes'] = fields[b'csbytes'] = 0
-        fields[b'end_time'] = fields[b'start_time']
+        fields["cspkts"] = fields["scpkts"] = 0
+        fields["scbytes"] = fields["csbytes"] = 0
+        fields["end_time"] = fields["start_time"]
 
         return fields

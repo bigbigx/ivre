@@ -1,5 +1,5 @@
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2026 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -14,22 +14,36 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-FROM debian:stable
+FROM debian:trixie-slim AS builder
+
+ENV DEBIAN_FRONTEND noninteractive
+
+# Install pip then install IVRE
+ADD ivre.tar ./
+RUN apt-get -q update && \
+    apt-get -qy --no-install-recommends install python3-pip && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=$(grep '^__version__ *=' /ivre/ivre/_version.py | sed 's#.*= *##' | tr -d \"\') \
+    pip3 install --break-system-packages /ivre
+
+
+FROM debian:trixie-slim
 LABEL maintainer="Pierre LALET <pierre@droids-corp.org>"
 
 ENV DEBIAN_FRONTEND noninteractive
 
-# Dependencies
-RUN echo "deb http://deb.debian.org/debian stable-backports main" >> /etc/apt/sources.list
+# Install Python
 RUN apt-get -q update && \
-    apt-get -qy --no-install-recommends install python3-pymongo python3-crypto \
-        python3-setuptools python3-bottle ca-certificates && \
+    apt-get -qy --no-install-recommends install python3 ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# IVRE
-ADD ivre.tar ./
-RUN cd ivre/ && \
-    python3 setup.py build && python3 setup.py install && \
-    cd ../ && rm -rf ivre/
+COPY --from=builder /usr/local/share/bash-completion/completions/ivre /usr/local/share/bash-completion/completions/ivre
+COPY --from=builder /usr/local/lib/python3.13 /usr/local/lib/python3.13
+COPY --from=builder /usr/local/bin/ivre /usr/local/bin/ivre
+COPY --from=builder /usr/local/share/doc/ivre /usr/local/share/doc/ivre
+COPY --from=builder /usr/local/share/ivre /usr/local/share/ivre
+
+# Fix version
+RUN sed -ri 's#(version = .*)(['\''"])$#\1-docker\2#' \
+    /usr/local/lib/python*/dist-packages/ivre/_version.py
 
 RUN echo 'DB = "mongodb://ivredb/"' > /etc/ivre.conf

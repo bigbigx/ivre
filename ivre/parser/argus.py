@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,9 +18,8 @@
 
 """Support for Argus log files"""
 
-
 import datetime
-
+from typing import Any, BinaryIO
 
 from ivre.parser import CmdParser
 
@@ -28,16 +27,24 @@ from ivre.parser import CmdParser
 class Argus(CmdParser):
     """Argus log generator"""
 
-    fields = ["proto", "dir",
-              "saddr", "sport",
-              "daddr", "dport",
-              "spkts", "dpkts",
-              "sbytes", "dbytes",
-              "stime", "ltime"]
+    fields = [
+        "proto",
+        "dir",
+        "saddr",
+        "sport",
+        "daddr",
+        "dport",
+        "spkts",
+        "dpkts",
+        "sbytes",
+        "dbytes",
+        "stime",
+        "ltime",
+    ]
     aggregation = ["saddr", "sport", "daddr", "dport", "proto"]
     timefmt = "%s.%f"
 
-    def __init__(self, fdesc, pcap_filter=None):
+    def __init__(self, fdesc: str | BinaryIO, pcap_filter: str | None = None):
         """Creates the Argus object.
 
         fdesc: a file-like object or a filename
@@ -50,15 +57,18 @@ class Argus(CmdParser):
         cmd.extend(["-r", fdesc if isinstance(fdesc, str) else "-"])
         if pcap_filter is not None:
             cmd.extend(["--", pcap_filter])
-        super(Argus, self).__init__(
-            cmd, {} if isinstance(fdesc, str) else {"stdin": fdesc},
+        super().__init__(
+            cmd,
+            {} if isinstance(fdesc, str) else {"stdin": fdesc},
         )
         self.fdesc.readline()
 
     @classmethod
-    def parse_line(cls, line):
-        fields = dict((name, val.strip().decode())
-                      for name, val in zip(cls.fields, line.split(b",")))
+    def parse_line(cls, line: bytes) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            name: val.strip().decode()
+            for name, val in zip(cls.fields, line.split(b","))
+        }
         for fld in ["sport", "dport"]:
             try:
                 fields[fld] = int(
@@ -77,7 +87,5 @@ class Argus(CmdParser):
         fields["start_time"] = datetime.datetime.fromtimestamp(
             float(fields.pop("stime"))
         )
-        fields["end_time"] = datetime.datetime.fromtimestamp(
-            float(fields.pop("ltime"))
-        )
+        fields["end_time"] = datetime.datetime.fromtimestamp(float(fields.pop("ltime")))
         return fields

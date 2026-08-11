@@ -8,6 +8,9 @@ keywords (for some of them, shortcuts are available in the menus).
 Keep in mind that the information available in this interface highly
 depends on the options used to run Nmap.
 
+Access to the web interface can optionally require authentication;
+see :doc:`web-auth` for details.
+
 The interface
 ~~~~~~~~~~~~~
 
@@ -45,7 +48,8 @@ displayed in the rightmost part of the screen.
    - ``category``, ``source``
    - ``country``, ``city``, ``as``
    - ``net``, ``net:[mask]``
-   - ``domains``, ``domains:[level]``
+   - ``domains``, ``domains:[level]``, ``domains:[domain]``,
+     ``domains:[domain]:[level]``
    - ``hop``, ``hop:[number]``
    - ``port``, ``port:[open/closed/filtered]``, ``port:[service]``
      ``portlist:[open/closed/filtered]``,
@@ -66,6 +70,8 @@ displayed in the rightmost part of the screen.
      ``smb.dnsdomain``, ``smb.forest``, ``smb.workgroup``
    - ``cert.issuer``, ``cert.subject``, ``cert.md5``, ``cert.sha1``,
      ``cert.sha256``
+   - ``cacert.issuer``, ``cacert.subject``, ``cacert.md5``,
+     ``cacert.sha1``, ``cacert.sha256``
    - ``sshkey.type``, ``sshkey.bits``, ``sshkey.fingerprint``
    - ``ike.notification``, ``ike.transforms``,
      ``ike.transforms.Authentication``, ``ike.transforms.Encryption``,
@@ -147,6 +153,7 @@ Filters
 - ``[!]domain:[FQDN]`` look for results with a hostname within a
   matching domain name.
 - ``[!]category:`` filter a category.
+- ``[!]tag[:value[:info]]`` filter a tag.
 - ``[!]country:[two letters code]`` filter a country.
 - ``[!]city:`` filter a city (use with ``country:``).
 - ``[!]asnum:`` filter by AS number (lists allowed).
@@ -214,17 +221,25 @@ Filters
 - ``sshkey:`` look for a particular SSH key.
 - ``cert.md5:``, ``cert.sha1:``, ``cert.sha256:`` look for a
   particular certificate.
+- ``cacert.md5:``, ``cacert.sha1:``, ``cacert.sha256:`` look for a
+  particular CA certificate.
 - ``torcert`` look for Tor certificates.
 - ``webfiles`` look for "typical" web files in the shared folders.
 - ``webmin`` look for Webmin servers.
 - ``x11open`` look for open X11 servers.
 - ``x11srv`` look for X11 servers.
 - ``xp445`` look for Windows XP machines with TCP/445 port open.
-- ``[!]ssl-ja3-client[:JA3]`` look for hosts with a JA3 client or with
-  the given JA3 client.
+- ``[!]ssl-ja3-client[:JA3]`` look for hosts with a JA3 client
+  fingerprint or with the given JA3 client fingerprint.
 - ``[!]ssl-ja3-server[:[JA3S][:JA3C]]`` look for hosts with a JA3
-  server, with the given JA3 server (optionally corresponding to the
-  given JA3 client).
+  server fingerprint, with the given JA3 server fingerprint
+  (optionally corresponding to the given JA3 client fingerprint).
+- ``[!]ssl-ja4-client[:JA4]`` look for hosts with a JA4 client
+  fingerprint or with the given JA4 client fingerprint.
+- ``[!]ssl-jarm[:JARM]`` look for hosts with a (specific, when
+  specified) JARM fingerprint.
+- ``hassh[:HASSH]`` look for hosts with a (specific, when specified)
+  HASSH fingerprint.
 - ``[!]useragent[:USERAGENT]`` look for hosts with a User-Agent.
 - ``os:`` look for a specific value in the OS discovery results.
 - ``devtype:``, ``devicetype:`` look for a type of devices.

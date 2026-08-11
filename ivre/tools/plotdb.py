@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -20,33 +20,32 @@
 import argparse
 import math
 
+import matplotlib  # type: ignore
+import matplotlib.pyplot  # type: ignore
 
-import matplotlib
-import matplotlib.pyplot
 # from mpl_toolkits.mplot3d import Axes3D
 # pylint: disable=unused-import
-from mpl_toolkits.mplot3d import axes3d, Axes3D  # noqa: F401
+from mpl_toolkits.mplot3d import Axes3D, axes3d  # type: ignore # noqa: F401
 
-from ivre import db
+from ivre import db, utils
+from ivre.types import Filter, Record
 
 
-def graphhost(ap):
-    if 'ports' not in ap:
+def graphhost(host: Record) -> tuple[list[int], list[int]]:
+    if "ports" not in host:
         return [], []
     hh, pp = [], []
-    an = ap['addr']
-    ap = ap['ports']
-    for p in ap:
-        pn = p['port']
-        if p.get('state_state') == 'open':
-            hh.append(an)
-            pp.append(pn)
+    addr = utils.ip2int(host["addr"])
+    for p in host["ports"]:
+        if p.get("state_state") == "open":
+            hh.append(addr)
+            pp.append(p["port"])
     return hh, pp
 
 
-def getgraph(flt=db.db.nmap.flt_empty):
+def getgraph(flt: Filter = db.db.view.flt_empty) -> tuple[list[int], list[int]]:
     h, p = [], []
-    allhosts = db.db.nmap.get(flt)
+    allhosts = db.db.view.get(flt)
     for ap in allhosts:
         hh, pp = graphhost(ap)
         h += hh
@@ -54,54 +53,74 @@ def getgraph(flt=db.db.nmap.flt_empty):
     return h, p
 
 
-def graph3d(mainflt=db.db.nmap.flt_empty, alertflt=None):
+def graph3d(
+    mainflt: Filter = db.db.view.flt_empty, alertflt: Filter | None = None
+) -> None:
     h, p = getgraph(flt=mainflt)
     fig = matplotlib.pyplot.figure()
-    if matplotlib.__version__.startswith('0.99'):
+    if matplotlib.__version__.startswith("0.99"):
         ax = Axes3D(fig)
     else:
-        ax = fig.add_subplot(111, projection='3d')
-    ax.plot([x / 65535 for x in h], [x % 65535 for x in h],
-            [math.log(x, 10) for x in p], '.')
+        ax = fig.add_subplot(111, projection="3d")
+    ax.plot(
+        [x // 65535 for x in h],
+        [x % 65535 for x in h],
+        [math.log(x, 10) for x in p],
+        ".",
+    )
     if alertflt is not None:
-        h, p = getgraph(flt=db.db.nmap.flt_and(mainflt, alertflt))
+        h, p = getgraph(flt=db.db.view.flt_and(mainflt, alertflt))
         if h:
-            ax.plot([x / 65535 for x in h], [x % 65535 for x in h],
-                    [math.log(x, 10) for x in p], '.', c='r')
+            ax.plot(
+                [x // 65535 for x in h],
+                [x % 65535 for x in h],
+                [math.log(x, 10) for x in p],
+                ".",
+                c="r",
+            )
     matplotlib.pyplot.show()
 
 
-def graph2d(mainflt=db.db.nmap.flt_empty, alertflt=None):
+def graph2d(
+    mainflt: Filter = db.db.view.flt_empty, alertflt: Filter | None = None
+) -> None:
     h, p = getgraph(flt=mainflt)
     fig = matplotlib.pyplot.figure()
     ax = fig.add_subplot(111)
-    ax.semilogy(h, p, '.')
+    ax.semilogy(h, p, ".")
     if alertflt is not None:
-        h, p = getgraph(flt=db.db.nmap.flt_and(mainflt, alertflt))
+        h, p = getgraph(flt=db.db.view.flt_and(mainflt, alertflt))
         if h:
-            ax.semilogy(h, p, '.', c='r')
+            ax.semilogy(h, p, ".", c="r")
     matplotlib.pyplot.show()
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for this tool."""
     parser = argparse.ArgumentParser(
-        description='Plot scan results.',
-        parents=[db.db.nmap.argparser],
+        description="Plot scan results.",
+        parents=[db.db.view.argparser],
     )
-    parser.add_argument('--2d', '-2', action='store_const',
-                        dest='graph',
-                        const=graph2d,
-                        default=graph3d)
-    parser.add_argument('--3d', '-3', action='store_const',
-                        dest='graph',
-                        const=graph3d)
-    parser.add_argument('--alert-445', action='store_const',
-                        dest='alertflt',
-                        const=db.db.nmap.searchxp445(),
-                        default=db.db.nmap.searchhttpauth())
-    parser.add_argument('--alert-nfs', action='store_const',
-                        dest='alertflt',
-                        const=db.db.nmap.searchnfs())
-    args = parser.parse_args()
-    args.graph(mainflt=db.db.nmap.parse_args(args),
-               alertflt=args.alertflt)
+    parser.add_argument(
+        "--2d", "-2", action="store_const", dest="graph", const=graph2d, default=graph3d
+    )
+    parser.add_argument("--3d", "-3", action="store_const", dest="graph", const=graph3d)
+    parser.add_argument(
+        "--alert-445",
+        action="store_const",
+        dest="alertflt",
+        const=db.db.view.searchxp445(),
+        default=db.db.view.searchhttpauth(),
+    )
+    parser.add_argument(
+        "--alert-nfs",
+        action="store_const",
+        dest="alertflt",
+        const=db.db.view.searchnfs(),
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    args.graph(mainflt=db.db.view.parse_args(args), alertflt=args.alertflt)

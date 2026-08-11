@@ -5,7 +5,8 @@ build/
 dist/
 doc/_build
 docker/base-local/ivre.tar
-ivre/VERSION
+ivre/_version.py
+ivre.egg-info/
 tests/samples*
 tests/htmlcov*
 tests/.coverage

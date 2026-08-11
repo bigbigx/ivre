@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2024 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,27 +18,32 @@
 
 
 import struct
-
+from collections.abc import Generator
+from typing import cast
 
 from ivre import utils
+from ivre.types.active import NmapPort
 
 
-def _gen_items(data):
+def _gen_items(data: bytes) -> Generator[tuple[int, bytes], None, None]:
     while data:
         if len(data) < 4:
             utils.LOGGER.debug(
-                'Item too short: maybe a broken DICOM item [%r]', data,
+                "Item too short: maybe a broken DICOM item [%r]",
+                data,
             )
             return
-        itype, pad, ilen = struct.unpack('>BBH', data[:4])
-        if pad != 0:
+        itype, pad, ilen = struct.unpack(">BBH", data[:4])
+        if pad:
             utils.LOGGER.debug(
-                'Non zero padding: maybe a broken DICOM item [%r]', data,
+                "Non zero padding: maybe a broken DICOM item [%r]",
+                data,
             )
         data = data[4:]
         if ilen < len(data):
             utils.LOGGER.debug(
-                'Item too short: maybe a broken DICOM item [%r]', data,
+                "Item too short: maybe a broken DICOM item [%r]",
+                data,
             )
         yield (itype, data[:ilen])
         data = data[ilen:]
@@ -51,97 +56,110 @@ _USER_INFO_ITEMS = {
 }
 
 
-def _parse_items(data):
-    res = {}
+def _parse_items(data: bytes) -> dict[str, int | str]:
+    res: dict[str, int | str] = {}
     items = dict(_gen_items(data))
     if 0x50 not in items:
-        utils.LOGGER.warning('No User Info in items [%r]', items)
+        utils.LOGGER.warning("No User Info in items [%r]", items)
         return res
+    ivalue: bytes
+    ivalue_parsed: int | str
     for itype, ivalue in _gen_items(items[0x50]):
         if itype == 0x51:
             try:
-                ivalue = struct.unpack('>I', ivalue)[0]
+                ivalue_parsed = cast(int, struct.unpack(">I", ivalue)[0])
             except struct.error:
                 utils.LOGGER.warning(
-                    'Cannot convert max_pdu_length value to an integer [%r]',
+                    "Cannot convert max_pdu_length value to an integer [%r]",
                     ivalue,
                 )
+                ivalue_parsed = utils.encode_b64(ivalue).decode()
         else:
             try:
-                ivalue = ivalue.decode('ascii')
+                ivalue_parsed = ivalue.decode("ascii")
             except struct.error:
                 utils.LOGGER.warning(
-                    'Cannot convert value to an ASCII string [%r]',
+                    "Cannot convert value to an ASCII string [%r]",
                     ivalue,
                 )
-                ivalue = utils.encode_b64(ivalue).decode()
+                ivalue_parsed = utils.encode_b64(ivalue).decode()
         try:
-            itype = _USER_INFO_ITEMS[itype]
+            itype_parsed = _USER_INFO_ITEMS[itype]
         except KeyError:
-            utils.LOGGER.warning('Unknown item type in User Info %02x [%r]',
-                                 itype, ivalue)
-            itype = "unknown_%02x" % itype
-        res[itype] = ivalue
+            utils.LOGGER.warning(
+                "Unknown item type in User Info %02x [%r]", itype, ivalue
+            )
+            itype_parsed = f"unknown_{itype:02x}"
+        res[itype_parsed] = ivalue_parsed
     return res
 
 
-def parse_message(data):
-    res = {}
+def parse_message(data: bytes) -> NmapPort:
+    res: NmapPort = {}
     if len(data) < 6:
         utils.LOGGER.debug(
-            'Message too short: probably not a DICOM message [%r]', data,
+            "Message too short: probably not a DICOM message [%r]",
+            data,
         )
         return res
-    rtype, pad, rlen = struct.unpack('>BBI', data[:6])
-    if pad != 0:
+    rtype, pad, rlen = struct.unpack(">BBI", data[:6])
+    if pad:
         utils.LOGGER.debug(
-            'Non zero padding: probably not a DICOM message [%r]', data,
+            "Non zero padding: probably not a DICOM message [%r]",
+            data,
         )
         return res
     if rlen > len(data) - 6:
         utils.LOGGER.debug(
-            'Message too short: probably not a DICOM message [%r]',
+            "Message too short: probably not a DICOM message [%r]",
             data,
         )
         return res
     if rtype in [2, 3]:  # Associate accept / reject
-        res['service_name'] = 'dicom'
-        extra_info = {}
+        res["service_name"] = "dicom"
+        extra_info: dict[str, int | str] = {}
         if rtype == 2:
             msg = "Any AET is accepted (Insecure)"
             if (
-                    data[6:74] !=
-                    b'\x00\x01\x00\x00ANY-SCP         ECHOSCU         \x00\x00'
-                    b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-                    b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-                    b'\x00\x00'
+                data[6:74]
+                != b"\x00\x01\x00\x00ANY-SCP         ECHOSCU         \x00\x00"
+                b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+                b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+                b"\x00\x00"
             ):
-                extra_info = {'info': 'Unusual accept message'}
+                extra_info = {"info": "Unusual accept message"}
             else:
                 extra_info = _parse_items(data[74:])
         else:
             msg = "Called AET check enabled"
-            if data != b'\x03\x00\x00\x00\x00\x04\x00\x01\x01\x07':
+            if data != b"\x03\x00\x00\x00\x00\x04\x00\x01\x01\x07":
                 # Result: reject permanent (01)
                 # Source: user (01)
                 # Reason: called AE title not recognized (07)
-                extra_info = {'info': 'Unusual reject message'}
-        script = {
-            'id': 'dicom-ping',
-            'output': ("\n  dicom: DICOM Service Provider discovered!"
-                       "\n  config: %s" % msg),
-            'dicom-ping': {
-                "dicom": "DICOM Service Provider discovered!",
-                "config": msg,
-            },
+                extra_info = {"info": "Unusual reject message"}
+        script_output = [
+            "",
+            "dicom: DICOM Service Provider discovered!",
+            f"config: {msg}",
+        ]
+        script_data: dict[str, int | str] = {
+            "dicom": "DICOM Service Provider discovered!",
+            "config": msg,
         }
         for key, value in extra_info.items():
-            script['output'] += '\n  %s: %s' % (key, value)
-            script['dicom-ping'][key] = value
-        res['scripts'] = [script]
+            script_output.append(f"{key}: {value}")
+            script_data[key] = value
+        res["scripts"] = [
+            {
+                "id": "dicom-ping",
+                "output": "\n  ".join(script_output),
+                "dicom-ping": script_data,
+            }
+        ]
         return res
     utils.LOGGER.debug(
-        'Unknown message type [%r]: probably not a DICOM message [%r]',
-        rtype, data,
+        "Unknown message type [%r]: probably not a DICOM message [%r]",
+        rtype,
+        data,
     )
     return res

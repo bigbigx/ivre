@@ -1,0 +1,287 @@
+/**
+ * IVRE filter language: parsing, building, and serialisation.
+ *
+ * Filters travel between the client and the IVRE Web API as a flat
+ * space-separated string in the ``q`` query parameter (e.g.
+ * ``country:FR port:tcp/443 "tag:CDN:Cloudflare"``). This matches
+ * the legacy AngularJS UI and IVRE's existing ``ivre/web/utils.py``
+ * request-to-DB-filter translation.
+ *
+ * The grammar is intentionally simple: each whitespace-separated
+ * token is either ``type:value`` or a bare ``value`` (anonymous
+ * filter, e.g. ``tcp/80``, ``1.2.3.4/24``). Single or double quotes
+ * group values that contain spaces; backslashes are ordinary
+ * characters, so regex values (``hostname:/\.example\.com/``) travel
+ * unmodified. A literal quote character is expressed by quoting it
+ * with the other quote character.
+ */
+
+export interface Filter {
+  /** Filter type prefix (e.g. ``country``, ``port``, ``tag``).
+   *  ``undefined`` means an anonymous filter — the value travels as
+   *  a bare token. */
+  type?: string;
+  /** Filter value, unquoted. */
+  value: string;
+  /** Negation. Renders as ``!type:value`` or ``-type:value``. */
+  neg?: boolean;
+}
+
+const NEEDS_QUOTING = /[\s":']/;
+
+/**
+ * Quote a value if it contains whitespace, a colon, or a quote.
+ *
+ * Double quotes are preferred; a value containing double quotes is
+ * single-quoted, and a value containing both quote characters is
+ * emitted as adjacent quoted segments (which the tokenizer
+ * concatenates, shlex-style). Backslashes never need quoting: they
+ * are ordinary characters in the filter language.
+ */
+export function quoteValue(value: string): string {
+  if (!NEEDS_QUOTING.test(value)) {
+    return value;
+  }
+  if (!value.includes('"')) {
+    return `"${value}"`;
+  }
+  if (!value.includes("'")) {
+    return `'${value}'`;
+  }
+  return value
+    .split('"')
+    .map((part) => (part ? `"${part}"` : ""))
+    .join(`'"'`);
+}
+
+/**
+ * Render a single filter back to the IVRE filter language.
+ */
+export function renderFilter(filter: Filter): string {
+  const prefix = filter.neg ? "!" : "";
+  if (filter.type === undefined) {
+    return prefix + quoteValue(filter.value);
+  }
+  return `${prefix}${filter.type}:${quoteValue(filter.value)}`;
+}
+
+/**
+ * Build a ``q=`` query string from a list of filters.
+ */
+export function buildQueryFromFilters(filters: readonly Filter[]): string {
+  return filters.map(renderFilter).join(" ");
+}
+
+/**
+ * Parse a ``q=`` query string back into a list of filters.
+ *
+ * Tokenisation matches the server side (``ivre/web/utils.py``):
+ * single or double quotes group values, backslashes are ordinary
+ * characters (no escape processing, so regex values keep their
+ * backslashes), and whitespace outside quotes is the token
+ * separator. Negation is the leading ``!`` or ``-`` (kept
+ * consistent with the legacy UI). Unlike the server, an unbalanced
+ * quote is tolerated: the token simply extends to the end of the
+ * string.
+ */
+export function parseFiltersFromQuery(query: string): Filter[] {
+  const filters: Filter[] = [];
+  let i = 0;
+  const n = query.length;
+
+  while (i < n) {
+    while (i < n && /\s/.test(query[i])) i++;
+    if (i >= n) break;
+
+    let neg = false;
+    if (query[i] === "!" || query[i] === "-") {
+      neg = true;
+      i++;
+    }
+
+    let token = "";
+    let quote: '"' | "'" | undefined;
+    while (i < n) {
+      const c = query[i];
+      if (quote !== undefined) {
+        if (c === quote) {
+          quote = undefined;
+          i++;
+          continue;
+        }
+        token += c;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        quote = c;
+        i++;
+        continue;
+      }
+      if (/\s/.test(c)) {
+        break;
+      }
+      token += c;
+      i++;
+    }
+
+    if (!token) continue;
+
+    const colon = token.indexOf(":");
+    if (colon === -1) {
+      filters.push({ value: token, neg });
+    } else {
+      filters.push({
+        type: token.slice(0, colon),
+        value: token.slice(colon + 1),
+        neg,
+      });
+    }
+  }
+
+  return filters;
+}
+
+/**
+ * Query meta-tokens that are *not* content filters. The host-list
+ * route owns result paging via the ``?skip=`` / ``?limit=`` URL
+ * params (folding them back into ``q=`` only at fetch time), so a
+ * ``skip:`` / ``limit:`` token arriving inside ``q=`` — e.g. a legacy
+ * shared URL like ``?q=country:FR skip:100`` — must not be treated as
+ * a filter: it would render as a bogus chip and, worse, silently
+ * offset the fetched result window while the UI's pagination state
+ * (bounds, First/Prev/Next) still assumes ``skip = 0``.
+ */
+export const QUERY_META_TYPES: ReadonlySet<string> = new Set(["skip", "limit"]);
+
+/**
+ * Drop query meta-tokens (see :data:`QUERY_META_TYPES`) from a parsed
+ * filter list, leaving only genuine content filters.
+ */
+export function stripMetaFilters(filters: readonly Filter[]): Filter[] {
+  return filters.filter(
+    (f) => f.type === undefined || !QUERY_META_TYPES.has(f.type),
+  );
+}
+
+/**
+ * Highlight map keyed by filter type. Each value is the lowercased
+ * raw value so a case-insensitive comparison works at render time.
+ *
+ * Components ask ``map.country?.has("fr")`` to decide whether to add
+ * a ``bg-highlight`` highlight on the matching chip.
+ */
+export type HighlightMap = Map<string, Set<string>>;
+
+const HIGHLIGHT_TYPES = new Set([
+  "country",
+  "city",
+  "asnum",
+  "asname",
+  "as",
+  "source",
+  "sensor",
+  "host",
+  "domain",
+  "hostname",
+  "category",
+  "tag",
+  "type",
+  "dataset",
+  "name",
+  "target",
+  "service",
+  "product",
+  "version",
+  "port",
+  "recontype",
+]);
+
+/** Bare ``protocol/port`` shape (e.g. ``tcp/443``, ``udp/53``).
+ *  Anonymous filters matching this pattern are indexed under the
+ *  ``port`` highlight set so that clicking an open-port chip
+ *  highlights the matching chip in adjacent cards / facet rows. */
+const PORT_TOKEN_RE = /^[A-Za-z]+\/\d+$/;
+
+export function buildHighlightMap(filters: readonly Filter[]): HighlightMap {
+  const out: HighlightMap = new Map();
+  for (const f of filters) {
+    if (f.neg) continue;
+    let key: string | undefined = f.type;
+    if (key === undefined) {
+      // Anonymous filter. We only recognise port tokens for now;
+      // bare IPs / CIDRs / hostnames don't have a chip to highlight.
+      if (PORT_TOKEN_RE.test(f.value)) {
+        key = "port";
+      } else {
+        continue;
+      }
+    }
+    if (!HIGHLIGHT_TYPES.has(key)) continue;
+    let set = out.get(key);
+    if (!set) {
+      set = new Set();
+      out.set(key, set);
+    }
+    set.add(f.value.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Type guard: does this string look like an IVRE filter type prefix?
+ *
+ * Used by FilterBar's autocomplete.
+ */
+export const FILTER_TYPES = [
+  "host",
+  "net",
+  "range",
+  "hostname",
+  "domain",
+  "category",
+  "tag",
+  "country",
+  "city",
+  "asnum",
+  "asname",
+  "source",
+  "sourcefile",
+  "sensor",
+  "type",
+  "dataset",
+  "name",
+  "target",
+  "timerange",
+  "timeago",
+  "service",
+  "product",
+  "version",
+  "script",
+  "port",
+  "anonftp",
+  "anonldap",
+  "authbypassvnc",
+  "authhttp",
+  "banner",
+  "cookie",
+  "file",
+  "geovision",
+  "httptitle",
+  "nfs",
+  "nis",
+  "yp",
+  "mssqlemptypwd",
+  "mysqlemptypwd",
+  "httphdr",
+  "httpapp",
+  "owa",
+  "phpmyadmin",
+  "smb.dnsdomain",
+  "smb.forest",
+  "smb.lanmanager",
+  "smb.os",
+  "smb.workgroup",
+] as const;
+
+export type FilterType = (typeof FILTER_TYPES)[number];

@@ -1,6 +1,6 @@
 <!--
   This file is part of IVRE.
-  Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+  Copyright 2011 - 2023 Pierre LALET <pierre@droids-corp.org>
 
   IVRE is free software: you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published by
@@ -24,12 +24,14 @@
      ng-mousemove="clear_timer_toggle_preview($event)"
      >
   <div host-summary=""></div>
-<!-- SYN-ACK honeypot -->
-<dd ng-if="::host.synack_honeypot"
-    class="label label-status label-danger"
-    title="Some ports may be missing.">
-  SYN-ACK honeypot
+<!-- Tags -->
+<dd ng-repeat-start="tag in ::host.tags"
+    class="label label-status label-{{::tag.type}} clickable"
+    title="{{::tag.info.join('\n')}}"
+    ng-click="setparam('tag', tag.value)">
+  {{tag.value}}
 </dd>
+<span ng-repeat-end ng-if="!$last"></span>
 <!-- Next div is only displayed in summary mode-->
 <div class="summary"
      ng-hide="host.fulldisplay"
@@ -60,7 +62,7 @@
     <div port-summary=""></div>
   </dt>
   <dd ng-repeat-end ng-if="port.port !== -1">
-    <div ng-if="::port.service_name"
+    <div ng-if="::port.service_name || port.screenshot"
 	 class="result-service"
 	 service-summary="">
     </div>

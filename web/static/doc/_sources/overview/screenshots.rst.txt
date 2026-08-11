@@ -86,6 +86,33 @@ Heatmap showing correlations between AS and open ports
 
 World map
 
+IVRE as a plugin
+----------------
+
+See :ref:`usage/use-cases:YETI plugin`, :ref:`usage/use-cases:Cortex
+analyzer` and :ref:`usage/use-cases:OpenCTI connector` use cases.
+
+|yeti_investigation|
+
+Fictitious investigation in `Yeti <https://yeti-platform.github.io/>`_
+about an IP address used by the archlinux.org domain, based on data
+from IVRE.
+
+|cortex_analyzer_template|
+
+`Cortex <https://thehive-project.org/>`_ report about an IP address
+using data from IVRE.
+
+|opencti_connector_scans|
+
+Fictitious investigation in `OpenCTI <https://www.opencti.io/>`__
+based on scans data from IVRE.
+
+|opencti_connector_passive|
+
+Fictitious investigation in `OpenCTI <https://www.opencti.io/>`__
+based on passive data from IVRE.
+
 .. |screenshot_heatmap| image:: ../screenshots/webui-home-heatmap.png
 .. |screenshot_heatmap_zoom| image:: ../screenshots/webui-details-heatmapzoom.png
 .. |screenshot_solar_map| image:: ../screenshots/webui-screenshots-solar-world.png
@@ -102,3 +129,7 @@ World map
 .. |screenshot_kibana_pie_countries_asnums| image:: ../screenshots/kibana-pie-countries_ASnums.png
 .. |screenshot_kibana_heatmap_asnames_ports| image:: ../screenshots/kibana-heatmap-asnames-ports.png
 .. |screenshot_kibana_worldmap| image:: ../screenshots/kibana-worldmap.png
+.. |yeti_investigation| image:: ../screenshots/yeti_investigation.png
+.. |cortex_analyzer_template| image:: ../screenshots/cortex-analyzer-template.png
+.. |opencti_connector_scans| image:: ../screenshots/opencti-connector-scans.png
+.. |opencti_connector_passive| image:: ../screenshots/opencti-connector-passive.png

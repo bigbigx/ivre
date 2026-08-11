@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 # This file is part of IVRE.
-# Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+# Copyright 2011 - 2025 Pierre LALET <pierre@droids-corp.org>
 #
 # IVRE is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -19,42 +19,55 @@
 
 """Display IVRE's version"""
 
-
 import os
 import sys
 
-
 from ivre import VERSION
+from ivre.plugins import get_version, list_plugins
 
 
-def main():
+def main() -> None:
     """Display IVRE's version"""
     print("IVRE - Network recon framework")
-    print("Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>")
-    print("Version %s" % VERSION)
+    print("Copyright 2011 - 2025 Pierre LALET <pierre@droids-corp.org>")
+    print(f"Version {VERSION}")
     print()
-    print("Python %s" % sys.version)
+    print(f"Python {sys.version}")
     print()
     try:
-        print(' '.join(str(elt) for elt in os.uname()))
+        print(" ".join(str(elt) for elt in os.uname()))
     except AttributeError:
         # Windows OS don't have os.uname()
         print(sys.platform)
     print()
     print("Dependencies:")
     for module in [
-            'pymongo', 'sqlalchemy', 'psycopg2', 'cryptography', 'krbV', 'PIL',
-            'MySQLdb', 'dbus', 'matplotlib', 'bottle', 'OpenSSL', 'tinydb',
+        "MySQLdb",
+        "OpenSSL",
+        "PIL",
+        "bottle",
+        "cryptography",
+        "dbus",
+        "gssapi",
+        "matplotlib",
+        "psycopg2",
+        "pycurl",
+        "pymongo",
+        "sqlalchemy",
+        "elasticsearch",
+        "elasticsearch_dsl",
     ]:
-        try:
-            version = __import__(module).__version__
-        except AttributeError:
-            try:
-                version = __import__(module).version
-            except AttributeError:
-                version = "[unknown version]"
-        except ImportError:
-            print("    Python module %s: missing" % (module,))
-            continue
-        print("    Python module %s: %s" % (module, version))
+        version = get_version(module)
+        if version is None:
+            version = "*missing*"
+        print(f"    {module}: {version}")
     print()
+    cat_plugins = list_plugins()
+    if cat_plugins:
+        print("Plugins:")
+        for cat in sorted(cat_plugins):
+            print(f"    {cat}:")
+            plugins = cat_plugins[cat]
+            for plugin, version in plugins:
+                print(f"        {plugin}: {version}")
+        print()

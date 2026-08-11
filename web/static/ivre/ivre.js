@@ -1,6 +1,6 @@
 /*
  * This file is part of IVRE.
- * Copyright 2011 - 2020 Pierre LALET <pierre@droids-corp.org>
+ * Copyright 2011 - 2025 Pierre LALET <pierre@droids-corp.org>
  *
  * IVRE is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by
@@ -23,7 +23,6 @@ function setdefaultconfig() {
         "notesbase": "/dokuwiki/#IP#",
         "dflt_limit": 10,
         "warn_dots_count": 20000,
-        "publicsrv": false,
         "uploadok": false,
     };
 
@@ -36,11 +35,57 @@ function setdefaultconfig() {
 
 setdefaultconfig();
 
+/* Redirect to login page if auth is enabled and user is not authenticated */
+if (config.auth_enabled && window.location.pathname.indexOf("login.html") === -1) {
+    (function() {
+        var cgibase = config.cgibase || "cgi";
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", cgibase + "/auth/me", false);
+        xhr.send();
+        if (xhr.status === 200) {
+            try {
+                var data = JSON.parse(xhr.responseText);
+                if (!data.authenticated) {
+                    window.location.href = "login.html";
+                }
+            } catch(e) {}
+        }
+    })();
+}
+
 /****** Global Variables *******/
 
 /* global variables */
 var clicktimeout = null;
 var wanted_scripts, wanted_hops;
+
+/* Dark mode support */
+function setDarkMode(enabled) {
+    var link = document.getElementById('ivre-dark-stylesheet');
+    if(!link) return;
+    if(enabled) {
+        link.removeAttribute('disabled');
+        try { localStorage.setItem('ivre_dark_mode', '1'); } catch(e){}
+    } else {
+        link.setAttribute('disabled', 'disabled');
+        try { localStorage.setItem('ivre_dark_mode', '0'); } catch(e){}
+    }
+}
+
+function toggleDarkMode() {
+    var link = document.getElementById('ivre-dark-stylesheet');
+    if(!link) return;
+    setDarkMode(link.disabled);
+}
+
+/* Apply saved preference on script load */
+try {
+    var saved = localStorage.getItem('ivre_dark_mode');
+    if(saved === '1') {
+        // defer to onload to ensure DOM elements exist
+        window.addEventListener('load', function() { setDarkMode(true); });
+    }
+} catch(e) {}
 
 /******* IVRE specific methods *******/
 
@@ -48,8 +93,8 @@ function hideall() {
     $("#notes-container").children().css("display", "none");
 }
 
-function addr_links(host) {
-    var addr = host.addr.split('.');
+function addr_links_ipv4(host) {
+    var addr = host.split('.');
     var result = [];
     var net;
     for(var i = 0; i < addr.length; i++) {
@@ -63,6 +108,47 @@ function addr_links(host) {
         });
     }
     return result;
+}
+
+function addr_links_ipv6(host) {
+    var addr = host.split(':');
+    var result = [];
+    var j, net;
+    var end = false;
+    for(var i = 0; i < addr.length; i++) {
+	if(! addr[i]) {
+	    end = true;
+            result.push({
+		"addrpart": "",
+		"net": "",
+            });
+	    continue;
+	}
+        net = addr.slice(0, i + 1).join(':');
+	if(end) {
+	    j = 8 - addr.length + i;
+	}
+	else {
+	    j = i;
+	    if (j !== 7) {
+		net += '::';
+	    }
+	}
+        if(j !== 7)
+	    net += '/' + (16 * (j+1));
+        result.push({
+            "addrpart": addr[i],
+            "net": net,
+        });
+    }
+    return result;
+}
+
+function addr_links(host) {
+    if (host.addr.indexOf(":") == -1) {
+	return addr_links_ipv4(host.addr);
+    }
+    return addr_links_ipv6(host.addr);
 }
 
 function hostnames_links(host) {
@@ -80,7 +166,7 @@ function hostnames_links(host) {
             var fullname = names.shift();
             var result = [{
                 'param': 'hostname',
-                'value': fullname + '.' + names.join('.'),
+                'value': fullname + (names.length ? '.' + names.join('.') : ''),
                 'name': fullname,
             }];
             for(var j in names) {
